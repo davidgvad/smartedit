@@ -14,6 +14,17 @@ from smartedit.schemas import AudioModelJudgment, audio_judgment_from_dict
 
 LOGGER = logging.getLogger(__name__)
 _TIMESTAMP_TOLERANCE_SECONDS = 0.001
+_TAGGED_AUDIO_FIELDS = (
+    "MUSIC_PRESENT",
+    "MUSIC_ENERGY",
+    "RHYTHMIC_STRENGTH",
+    "CATCHINESS_CONFIDENCE",
+    "SPEECH_MUSIC_INTERFERENCE",
+    "AUDIO_QUALITY",
+    "BACKGROUND_MUSIC_SCORE",
+    "CATCHY_MUSIC_SCORE",
+    "ENVIRONMENTAL_SOUND",
+)
 
 
 class AudioModelError(AdapterError):
@@ -94,6 +105,8 @@ class AudioFlamingoAdapter(AudioModelAdapter):
         self._model: Any | None = None
         self._processor: Any | None = None
         self._torch: Any | None = None
+        self._transformers_version: str | None = None
+        self._last_generation_diagnostics: dict[str, Any] | None = None
 
     @property
     def loaded(self) -> bool:
@@ -104,6 +117,7 @@ class AudioFlamingoAdapter(AudioModelAdapter):
         # a checkpoint repository.
         try:
             import torch
+            import transformers
             from transformers import (
                 AudioFlamingo3ForConditionalGeneration,
                 AutoProcessor,
@@ -148,6 +162,7 @@ class AudioFlamingoAdapter(AudioModelAdapter):
             ) from exc
 
         self._torch = torch
+        self._transformers_version = str(transformers.__version__)
         self._processor = processor
         self._model = model
 
@@ -181,11 +196,14 @@ class AudioFlamingoAdapter(AudioModelAdapter):
         LOGGER.info("Analyzing %s with Audio Flamingo", audio_path.name)
         self.last_raw_output = {
             "model_name": self.model_name,
+            "transformers_version": self._transformers_version,
             "attempts": [],
             "retry_used": False,
+            "tagged_fallback_used": False,
         }
         current_messages = messages
         for attempt_number in (1, 2):
+            self._last_generation_diagnostics = None
             try:
                 raw_text = self._generate_text(current_messages)
             except AudioModelError as exc:
@@ -199,11 +217,18 @@ class AudioFlamingoAdapter(AudioModelAdapter):
                         "inference_error": str(exc),
                     }
                 )
+                if self._last_generation_diagnostics is not None:
+                    self.last_raw_output["failed_generation_diagnostics"] = (
+                        self._last_generation_diagnostics
+                    )
                 raise
             attempt: dict[str, Any] = {
                 "attempt": attempt_number,
+                "format": "json" if attempt_number == 1 else "json_repair",
                 "raw_text": raw_text,
             }
+            if self._last_generation_diagnostics is not None:
+                attempt["generation_diagnostics"] = self._last_generation_diagnostics
             self.last_raw_output["attempts"].append(attempt)
             self.last_raw_output["raw_text"] = raw_text
             try:
@@ -211,12 +236,21 @@ class AudioFlamingoAdapter(AudioModelAdapter):
                 validated = validate_audio_model_output(parsed, duration)
             except AudioModelError as exc:
                 attempt["validation_error"] = str(exc)
+                if _is_json_end_marker(raw_text):
+                    # Some Audio Flamingo checkpoints answer JSON-only prompts
+                    # with this literal ordinary-text marker. Repeating the same
+                    # request has proven unhelpful, so switch to an independently
+                    # parseable record without treating the marker as evidence.
+                    attempt["marker_only_response"] = True
+                    self.last_raw_output["json_marker_detected"] = True
+                    LOGGER.warning(
+                        "Audio Flamingo generated only [END OF JSON]; switching "
+                        "to the tagged compatibility format"
+                    )
+                    break
                 if attempt_number == 2:
-                    self.last_raw_output["status"] = "invalid_after_format_retry"
-                    raise AudioModelError(
-                        "Audio Flamingo failed to return valid structured JSON after "
-                        f"one formatting retry: {exc}"
-                    ) from exc
+                    self.last_raw_output["json_status"] = "invalid_after_format_retry"
+                    break
                 LOGGER.warning(
                     "Audio Flamingo returned invalid structured output; retrying JSON "
                     "format once: %s",
@@ -231,11 +265,64 @@ class AudioFlamingoAdapter(AudioModelAdapter):
                     "status": "ok",
                     "parsed": validated,
                     "selected_attempt": attempt_number,
+                    "selected_format": "json",
                 }
             )
             return audio_judgment_from_dict(validated)
 
-        raise AssertionError("Audio Flamingo formatting loop ended unexpectedly")
+        # Audio Flamingo is a free-text audio-language model; the upstream model
+        # does not guarantee JSON-constrained decoding. If both JSON prompting
+        # routes fail, ask for a minimal tagged record and parse only exact,
+        # enumerated fields. The final project report is still JSON, and this
+        # compatibility path remains visible in raw_model_outputs.
+        self.last_raw_output["tagged_fallback_used"] = True
+        tagged_messages = _tagged_record_messages(audio_path, duration)
+        tagged_attempt_number = len(self.last_raw_output["attempts"]) + 1
+        self._last_generation_diagnostics = None
+        try:
+            raw_text = self._generate_text(tagged_messages)
+        except AudioModelError as exc:
+            self.last_raw_output.update(
+                {
+                    "status": "tagged_fallback_inference_failed",
+                    "inference_error": str(exc),
+                }
+            )
+            if self._last_generation_diagnostics is not None:
+                self.last_raw_output["failed_generation_diagnostics"] = (
+                    self._last_generation_diagnostics
+                )
+            raise
+
+        attempt = {
+            "attempt": tagged_attempt_number,
+            "format": "tagged_record",
+            "raw_text": raw_text,
+        }
+        if self._last_generation_diagnostics is not None:
+            attempt["generation_diagnostics"] = self._last_generation_diagnostics
+        self.last_raw_output["attempts"].append(attempt)
+        self.last_raw_output["raw_text"] = raw_text
+        try:
+            parsed = _parse_tagged_audio_record(raw_text)
+            validated = validate_audio_model_output(parsed, duration)
+        except AudioModelError as exc:
+            attempt["validation_error"] = str(exc)
+            self.last_raw_output["status"] = "invalid_after_tagged_fallback"
+            raise AudioModelError(
+                "Audio Flamingo failed to return valid structured audio fields in "
+                f"JSON or tagged compatibility format: {exc}"
+            ) from exc
+
+        self.last_raw_output.update(
+            {
+                "status": "ok",
+                "parsed": validated,
+                "selected_attempt": tagged_attempt_number,
+                "selected_format": "tagged_record_compatibility",
+            }
+        )
+        return audio_judgment_from_dict(validated)
 
     def _generate_text(self, messages: list[dict[str, Any]]) -> str:
         """Generate one response for an already prepared audio conversation."""
@@ -253,12 +340,43 @@ class AudioFlamingoAdapter(AudioModelAdapter):
             )
             inputs = _move_inputs(inputs, self.device)
             with self._torch.inference_mode():
-                output_ids = self._model.generate(
+                generation_output = self._model.generate(
                     **inputs,
                     max_new_tokens=self.max_new_tokens,
                     do_sample=False,
                 )
-            input_length = int(inputs["input_ids"].shape[-1])
+            output_ids = getattr(generation_output, "sequences", generation_output)
+            input_ids = inputs.get("input_ids")
+            if input_ids is None or not hasattr(input_ids, "shape"):
+                raise AudioModelError("Audio Flamingo processor did not return input_ids")
+            if not hasattr(output_ids, "shape") or len(output_ids.shape) != 2:
+                raise AudioModelError(
+                    "Audio Flamingo generate() returned an unsupported sequence container"
+                )
+            input_length = int(input_ids.shape[-1])
+            input_shape = [int(size) for size in input_ids.shape]
+            output_shape = [int(size) for size in output_ids.shape]
+            shapes_allow_prefix = (
+                len(input_shape) == 2
+                and output_shape[0] == input_shape[0]
+                and output_shape[1] >= input_length
+            )
+            prefix_matches = bool(
+                shapes_allow_prefix
+                and self._torch.equal(output_ids[:, :input_length], input_ids)
+            )
+            self._last_generation_diagnostics = {
+                "input_ids_shape": input_shape,
+                "output_ids_shape": output_shape,
+                "prompt_prefix_matches": prefix_matches,
+                "continuation_token_count": max(0, output_shape[1] - input_length),
+            }
+            if not prefix_matches:
+                raise AudioModelError(
+                    "Audio Flamingo generate() output did not begin with the exact "
+                    f"prompt token prefix (input shape {input_shape}, output shape "
+                    f"{output_shape}); refusing to guess where the continuation starts"
+                )
             generated_ids = output_ids[:, input_length:]
             decoded = self._processor.batch_decode(
                 generated_ids,
@@ -267,6 +385,20 @@ class AudioFlamingoAdapter(AudioModelAdapter):
             )
             if not decoded:
                 raise AudioModelError("Audio Flamingo decoded an empty response batch")
+            try:
+                debug_decoded = self._processor.batch_decode(
+                    generated_ids,
+                    skip_special_tokens=False,
+                    clean_up_tokenization_spaces=False,
+                )
+                if debug_decoded:
+                    self._last_generation_diagnostics[
+                        "continuation_with_special_tokens"
+                    ] = str(debug_decoded[0])
+            except Exception as exc:  # diagnostics must not invalidate inference
+                self._last_generation_diagnostics["special_token_decode_error"] = (
+                    f"{type(exc).__name__}: {exc}"
+                )
             return str(decoded[0])
         except AudioModelError:
             raise
@@ -279,6 +411,7 @@ class AudioFlamingoAdapter(AudioModelAdapter):
         self._processor = None
         self._model = None
         self._torch = None
+        self._last_generation_diagnostics = None
 
 
 def validate_audio_model_output(
@@ -393,6 +526,131 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     if errors:
         raise AudioModelError(f"Audio Flamingo returned invalid JSON: {errors[0]}")
     raise AudioModelError("Audio Flamingo did not return a JSON object")
+
+
+def _is_json_end_marker(text: str) -> bool:
+    """Recognize only the exact literal response observed from the checkpoint."""
+
+    return text.strip() == "[END OF JSON]"
+
+
+def _tagged_record_messages(audio_path: Path, duration: float) -> list[dict[str, Any]]:
+    """Build a fresh, minimal free-text request when JSON prompting fails."""
+
+    prompt = (
+        f"Listen to the attached {duration:.3f}-second audio and judge only its "
+        "audio editing.\n"
+        "Distinguish speech, music, environmental sound, and silence. Decide whether "
+        "music supports the content or masks speech. Reply with exactly one "
+        "pipe-separated record using every field below once and no commentary:\n\n"
+        "MUSIC_PRESENT=YES | MUSIC_ENERGY=LOW | RHYTHMIC_STRENGTH=0.0 | "
+        "CATCHINESS_CONFIDENCE=0.0 | SPEECH_MUSIC_INTERFERENCE=NONE | "
+        "AUDIO_QUALITY=ACCEPTABLE | BACKGROUND_MUSIC_SCORE=0 | "
+        "CATCHY_MUSIC_SCORE=0 | ENVIRONMENTAL_SOUND=none detected\n\n"
+        "Allowed values:\n"
+        "MUSIC_PRESENT is YES or NO.\n"
+        "MUSIC_ENERGY is LOW, MEDIUM, or HIGH.\n"
+        "RHYTHMIC_STRENGTH and CATCHINESS_CONFIDENCE are decimal numbers from 0 to 1.\n"
+        "SPEECH_MUSIC_INTERFERENCE is NONE, LOW, MEDIUM, or HIGH.\n"
+        "AUDIO_QUALITY is POOR, ACCEPTABLE, or GOOD.\n"
+        "Each score is exactly -1, 0, or 1. A positive score means the choice "
+        "supports the edit, zero means neutral or unnecessary, and negative means "
+        "it harms the edit.\n"
+        "ENVIRONMENTAL_SOUND is one short literal description.\n"
+        "Do not include timestamps, explanations, headings, Markdown, or extra fields."
+    )
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "audio", "path": str(audio_path.resolve())},
+            ],
+        }
+    ]
+
+
+def _parse_tagged_audio_record(text: str) -> dict[str, Any]:
+    """Parse the deliberately small compatibility grammar without inference."""
+
+    stripped = text.strip()
+    if not stripped:
+        raise AudioModelError("Audio Flamingo returned an empty tagged record")
+    if "\n" in stripped and "|" in stripped:
+        raise AudioModelError("Tagged audio record must use one delimiter style")
+    delimiter = "|" if "|" in stripped else "\n"
+    parts = stripped.split(delimiter)
+    if any(not part.strip() for part in parts):
+        raise AudioModelError("Tagged audio record contains an empty field")
+
+    fields: dict[str, str] = {}
+    allowed = set(_TAGGED_AUDIO_FIELDS)
+    for part in parts:
+        if part.count("=") != 1:
+            raise AudioModelError(
+                "Every tagged audio field must contain exactly one '=' separator"
+            )
+        key_text, value_text = part.split("=", 1)
+        key = key_text.strip().upper()
+        value = value_text.strip()
+        if key not in allowed:
+            raise AudioModelError(f"Unknown tagged audio field: {key or '<empty>'}")
+        if key in fields:
+            raise AudioModelError(f"Duplicate tagged audio field: {key}")
+        if not value:
+            raise AudioModelError(f"Tagged audio field {key} has an empty value")
+        fields[key] = value
+
+    missing = [key for key in _TAGGED_AUDIO_FIELDS if key not in fields]
+    if missing:
+        raise AudioModelError(
+            "Tagged audio record is missing required fields: " + ", ".join(missing)
+        )
+
+    present_text = fields["MUSIC_PRESENT"].upper()
+    if present_text not in {"YES", "NO"}:
+        raise AudioModelError("MUSIC_PRESENT must be exactly YES or NO")
+
+    score_values: dict[str, int] = {}
+    for key in ("BACKGROUND_MUSIC_SCORE", "CATCHY_MUSIC_SCORE"):
+        if fields[key] not in {"-1", "0", "1"}:
+            raise AudioModelError(f"{key} must be exactly -1, 0, or 1")
+        score_values[key] = int(fields[key])
+
+    number_values: dict[str, float] = {}
+    for key in ("RHYTHMIC_STRENGTH", "CATCHINESS_CONFIDENCE"):
+        try:
+            number = float(fields[key])
+        except ValueError as exc:
+            raise AudioModelError(f"{key} must be a number from 0 to 1") from exc
+        if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+            raise AudioModelError(f"{key} must be a number from 0 to 1")
+        number_values[key] = number
+
+    energy = fields["MUSIC_ENERGY"].lower()
+    interference = fields["SPEECH_MUSIC_INTERFERENCE"].lower()
+    quality = fields["AUDIO_QUALITY"].lower()
+    _enum(energy, {"low", "medium", "high"}, "MUSIC_ENERGY")
+    _enum(
+        interference,
+        {"none", "low", "medium", "high"},
+        "SPEECH_MUSIC_INTERFERENCE",
+    )
+    _enum(quality, {"poor", "acceptable", "good"}, "AUDIO_QUALITY")
+
+    return {
+        "background_music_present": present_text == "YES",
+        "music_energy": energy,
+        "rhythmic_strength": number_values["RHYTHMIC_STRENGTH"],
+        "catchiness_confidence": number_values["CATCHINESS_CONFIDENCE"],
+        "speech_music_interference": interference,
+        "environmental_sound": fields["ENVIRONMENTAL_SOUND"],
+        "audio_quality": quality,
+        "background_music_score": score_values["BACKGROUND_MUSIC_SCORE"],
+        "catchy_music_score": score_values["CATCHY_MUSIC_SCORE"],
+        # This compatibility grammar intentionally makes no timestamp claims.
+        "evidence": [],
+    }
 
 
 def _format_retry_messages(

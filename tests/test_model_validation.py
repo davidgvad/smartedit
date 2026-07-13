@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -13,6 +14,7 @@ from smartedit.models.audio_flamingo_adapter import (
     AudioModelError,
     _dtype_for_device,
     _move_inputs,
+    _parse_tagged_audio_record,
     validate_audio_model_output,
 )
 from smartedit.models.whisper_adapter import WhisperAdapter
@@ -36,6 +38,15 @@ def _audio_payload(start: float, end: float) -> dict[str, Any]:
             }
         ],
     }
+
+
+def _tagged_audio_payload() -> str:
+    return (
+        "MUSIC_PRESENT=YES | MUSIC_ENERGY=HIGH | RHYTHMIC_STRENGTH=0.82 | "
+        "CATCHINESS_CONFIDENCE=0.76 | SPEECH_MUSIC_INTERFERENCE=MEDIUM | "
+        "AUDIO_QUALITY=ACCEPTABLE | BACKGROUND_MUSIC_SCORE=-1 | "
+        "CATCHY_MUSIC_SCORE=1 | ENVIRONMENTAL_SOUND=quiet room tone"
+    )
 
 
 @pytest.mark.parametrize(
@@ -147,6 +158,62 @@ def test_audio_flamingo_uses_float32_model_precision() -> None:
     assert _dtype_for_device(torch, "cpu") is torch.float32
 
 
+class _GenerationTestProcessor:
+    def __init__(self, torch_module: Any) -> None:
+        self.torch = torch_module
+
+    def apply_chat_template(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"input_ids": self.torch.tensor([[10, 11]])}
+
+    def batch_decode(
+        self, _token_ids: Any, *, skip_special_tokens: bool, **_kwargs: Any
+    ) -> list[str]:
+        return ["[END OF JSON]" if skip_special_tokens else "[END OF JSON]<|im_end|>"]
+
+
+def test_audio_flamingo_generation_output_tracks_exact_prompt_prefix() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _Model:
+        def generate(self, **_kwargs: Any) -> Any:
+            return SimpleNamespace(sequences=torch.tensor([[10, 11, 12, 13]]))
+
+    adapter = AudioFlamingoAdapter(device="cpu")
+    adapter._model = _Model()
+    adapter._processor = _GenerationTestProcessor(torch)
+    adapter._torch = torch
+
+    raw_text = adapter._generate_text([])
+
+    assert raw_text == "[END OF JSON]"
+    assert adapter._last_generation_diagnostics is not None
+    assert adapter._last_generation_diagnostics["prompt_prefix_matches"] is True
+    assert adapter._last_generation_diagnostics["continuation_token_count"] == 2
+    assert (
+        adapter._last_generation_diagnostics["continuation_with_special_tokens"]
+        == "[END OF JSON]<|im_end|>"
+    )
+
+
+def test_audio_flamingo_refuses_to_guess_continuation_on_prefix_mismatch() -> None:
+    torch = pytest.importorskip("torch")
+
+    class _Model:
+        def generate(self, **_kwargs: Any) -> Any:
+            return torch.tensor([[99, 11, 12]])
+
+    adapter = AudioFlamingoAdapter(device="cpu")
+    adapter._model = _Model()
+    adapter._processor = _GenerationTestProcessor(torch)
+    adapter._torch = torch
+
+    with pytest.raises(AudioModelError, match="exact prompt token prefix"):
+        adapter._generate_text([])
+
+    assert adapter._last_generation_diagnostics is not None
+    assert adapter._last_generation_diagnostics["prompt_prefix_matches"] is False
+
+
 def test_audio_flamingo_retries_plain_text_once_and_preserves_responses(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -195,7 +262,9 @@ def test_audio_flamingo_stops_after_one_invalid_format_retry(
     adapter._model = object()
     adapter._processor = object()
     adapter._torch = object()
-    responses = iter(["first plain response", "second plain response", "unused"])
+    responses = iter(
+        ["first plain response", "second plain response", "invalid tagged response"]
+    )
     calls = 0
 
     def generate(_messages: list[dict[str, Any]]) -> str:
@@ -205,18 +274,93 @@ def test_audio_flamingo_stops_after_one_invalid_format_retry(
 
     monkeypatch.setattr(adapter, "_generate_text", generate)
 
-    with pytest.raises(AudioModelError, match="after one formatting retry"):
+    with pytest.raises(AudioModelError, match="tagged compatibility format"):
         adapter._analyze(audio_path, duration_seconds=5.0)
 
-    assert calls == 2
-    assert adapter.last_raw_output["status"] == "invalid_after_format_retry"
+    assert calls == 3
+    assert adapter.last_raw_output["status"] == "invalid_after_tagged_fallback"
     assert [item["raw_text"] for item in adapter.last_raw_output["attempts"]] == [
         "first plain response",
         "second plain response",
+        "invalid tagged response",
     ]
     assert all(
         "validation_error" in item for item in adapter.last_raw_output["attempts"]
     )
+
+
+def test_audio_flamingo_marker_uses_tagged_compatibility_format(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+    adapter = AudioFlamingoAdapter()
+    adapter._model = object()
+    adapter._processor = object()
+    adapter._torch = object()
+    responses = iter(["[END OF JSON]", _tagged_audio_payload()])
+    messages_seen: list[list[dict[str, Any]]] = []
+
+    def generate(messages: list[dict[str, Any]]) -> str:
+        messages_seen.append(messages)
+        return next(responses)
+
+    monkeypatch.setattr(adapter, "_generate_text", generate)
+
+    result = adapter._analyze(audio_path, duration_seconds=5.0)
+
+    assert result is not None
+    assert result.background_music_present is True
+    assert result.music_energy == "high"
+    assert result.speech_music_interference == "medium"
+    assert result.background_music_score == -1
+    assert result.catchy_music_score == 1
+    assert result.evidence == []
+    assert len(messages_seen) == 2
+    assert adapter.last_raw_output["retry_used"] is False
+    assert adapter.last_raw_output["tagged_fallback_used"] is True
+    assert adapter.last_raw_output["json_marker_detected"] is True
+    assert adapter.last_raw_output["selected_attempt"] == 2
+    assert adapter.last_raw_output["selected_format"] == "tagged_record_compatibility"
+    assert [item["format"] for item in adapter.last_raw_output["attempts"]] == [
+        "json",
+        "tagged_record",
+    ]
+    tagged_content = messages_seen[1][0]["content"]
+    assert any(item.get("type") == "audio" for item in tagged_content)
+    tagged_prompt = next(
+        item["text"] for item in tagged_content if item.get("type") == "text"
+    )
+    assert "MUSIC_PRESENT=YES" in tagged_prompt
+    assert "ENVIRONMENTAL_SOUND=none detected" in tagged_prompt
+
+
+def test_parse_tagged_audio_record_is_strict_and_adds_no_evidence() -> None:
+    parsed = _parse_tagged_audio_record(_tagged_audio_payload())
+    validated = validate_audio_model_output(parsed, 5.0)
+
+    assert validated["background_music_present"] is True
+    assert validated["rhythmic_strength"] == pytest.approx(0.82)
+    assert validated["catchiness_confidence"] == pytest.approx(0.76)
+    assert validated["environmental_sound"] == "quiet room tone"
+    assert validated["evidence"] == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "MUSIC_PRESENT=YES",
+        _tagged_audio_payload() + " | UNKNOWN=value",
+        _tagged_audio_payload().replace(
+            "MUSIC_ENERGY=HIGH", "MUSIC_ENERGY=HIGH | MUSIC_ENERGY=LOW"
+        ),
+        _tagged_audio_payload().replace("RHYTHMIC_STRENGTH=0.82", "RHYTHMIC_STRENGTH=nan"),
+        _tagged_audio_payload().replace("CATCHY_MUSIC_SCORE=1", "CATCHY_MUSIC_SCORE=1.0"),
+    ],
+)
+def test_parse_tagged_audio_record_rejects_ambiguous_values(text: str) -> None:
+    with pytest.raises(AudioModelError):
+        _parse_tagged_audio_record(text)
 
 
 def test_audio_fallback_preserves_failed_contextual_model_output(

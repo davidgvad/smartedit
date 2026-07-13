@@ -205,6 +205,18 @@ Audio Flamingo receives only audio plus the constrained prompt in
 frames it was not given; compatibility is considered later alongside Qwen
 context.
 
+Audio Flamingo is a free-text generator and does not guarantee schema-constrained
+decoding. The adapter first requests and validates JSON. If that fails, it tries
+one formatting repair; the exact marker-only response
+<code>[END OF JSON]</code> skips that redundant repair. It then makes one fresh
+request for nine strictly parsed tagged fields. A successful compatibility
+response is labeled
+<code>selected_format: tagged_record_compatibility</code> in
+<code>raw_model_outputs</code> and uses an empty evidence list because the tagged
+format makes no timestamp claims. If that also fails, the pipeline activates the
+explicitly non-equivalent librosa fallback. Raw attempts and token-prefix
+decoding diagnostics are retained.
+
 Librosa features are calculated independently even when Audio Flamingo works:
 
 - RMS mean and standard deviation
