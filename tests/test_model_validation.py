@@ -8,6 +8,7 @@ import pytest
 from smartedit.extraction.narration_features import extract_narration_features
 from smartedit.models.audio_flamingo_adapter import (
     AudioModelError,
+    _move_inputs,
     validate_audio_model_output,
 )
 from smartedit.models.whisper_adapter import WhisperAdapter
@@ -86,6 +87,49 @@ def test_whisper_return_language_retry_uses_fresh_input_container() -> None:
     assert len(pipeline.received) == 2
     assert pipeline.received[0] is not pipeline.received[1]
     assert pipeline_input == {"array": waveform, "sampling_rate": 16_000}
+
+
+def test_whisper_uses_single_item_batch_by_default() -> None:
+    class _RecordingPipeline:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, Any] = {}
+
+        def __call__(self, _input_data: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            self.kwargs = kwargs
+            return {"text": "ok", "chunks": []}
+
+    adapter = WhisperAdapter()
+    pipeline = _RecordingPipeline()
+    adapter._pipeline = pipeline
+
+    adapter._run_pipeline({"array": object(), "sampling_rate": 16_000}, return_timestamps=True)
+
+    assert pipeline.kwargs["batch_size"] == 1
+
+
+class _DeviceRecordingTensor:
+    def __init__(self, dtype: str) -> None:
+        self.dtype = dtype
+        self.calls: list[dict[str, Any]] = []
+
+    def to(self, **kwargs: Any) -> _DeviceRecordingTensor:
+        self.calls.append(kwargs)
+        return self
+
+
+def test_audio_flamingo_moves_inputs_without_casting_audio_dtype() -> None:
+    audio_features = _DeviceRecordingTensor("float32")
+    token_ids = _DeviceRecordingTensor("int64")
+
+    moved = _move_inputs(
+        {"input_features": audio_features, "input_ids": token_ids},
+        "cuda",
+    )
+
+    assert moved["input_features"] is audio_features
+    assert audio_features.dtype == "float32"
+    assert audio_features.calls == [{"device": "cuda"}]
+    assert token_ids.calls == [{"device": "cuda"}]
 
 
 class _WordTimestampMutatingPipeline:

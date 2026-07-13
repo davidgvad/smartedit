@@ -178,7 +178,7 @@ class AudioFlamingoAdapter(AudioModelAdapter):
                 return_dict=True,
                 return_tensors="pt",
             )
-            inputs = _move_inputs(inputs, self.device, self._model.dtype)
+            inputs = _move_inputs(inputs, self.device)
             with self._torch.inference_mode():
                 output_ids = self._model.generate(
                     **inputs,
@@ -334,8 +334,14 @@ def _load_prompt(path: str | Path | None) -> str:
         raise AudioModelError(f"Could not read audio prompt: {prompt_path}") from exc
 
 
-def _move_inputs(inputs: Any, device: str, dtype: Any) -> Any:
-    """Move tensors while preserving integer token IDs."""
+def _move_inputs(inputs: Any, device: str) -> Any:
+    """Move processor tensors to the model device without changing their dtype.
+
+    Audio Flamingo's processor emits float32 audio features. Preserve those
+    processor-selected dtypes: casting every floating tensor to the model's BF16
+    dtype caused the audio encoder to fail with
+    ``expected scalar type Float but found BFloat16``.
+    """
 
     if not isinstance(inputs, Mapping):
         if hasattr(inputs, "items"):
@@ -347,8 +353,7 @@ def _move_inputs(inputs: Any, device: str, dtype: Any) -> Any:
     for key, value in values.items():
         if not hasattr(value, "to"):
             continue
-        is_floating = bool(hasattr(value, "is_floating_point") and value.is_floating_point())
-        values[key] = value.to(device=device, dtype=dtype) if is_floating else value.to(device)
+        values[key] = value.to(device=device)
     return values
 
 

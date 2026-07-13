@@ -39,13 +39,16 @@ class WhisperAdapter(BaseModelAdapter[str | Path | None, NarrationAnalysis]):
         *,
         allow_download: bool = False,
         chunk_length_seconds: float = 30.0,
-        batch_size: int = 4,
+        batch_size: int = 1,
     ) -> None:
         super().__init__(model_name, device=device, cache_dir=cache_dir)
         self.allow_download = bool(allow_download)
         self.chunk_length_seconds = float(chunk_length_seconds)
         if not math.isfinite(self.chunk_length_seconds) or self.chunk_length_seconds <= 0:
             raise ValueError("chunk_length_seconds must be a finite positive number")
+        # This adapter sends one waveform to the Transformers ASR pipeline.
+        # A batch size greater than one can fail while the pipeline unbatches
+        # the final (single-item) audio chunk, so the safe default is one.
         self.batch_size = max(1, int(batch_size))
         self._model: Any | None = None
         self._processor: Any | None = None
