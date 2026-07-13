@@ -124,8 +124,9 @@ class QwenVLAdapter:
                 )
             resolved_path = path.resolve()
             frame_manifest.append({"path": str(resolved_path), "timestamp_seconds": timestamp})
-            # Current Transformers processors accept local image URLs here.
-            content.append({"type": "image", "url": resolved_path.as_uri()})
+            # Transformers accepts an HTTP(S) URL or a plain local path here,
+            # but not a file:// URI.
+            content.append({"type": "image", "url": str(resolved_path)})
             content.append(
                 {
                     "type": "text",
