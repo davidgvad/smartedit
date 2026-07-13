@@ -120,7 +120,11 @@ class AudioFlamingoAdapter(AudioModelAdapter):
             "cache_dir": self.cache_dir,
             "local_files_only": local_only,
         }
-        LOGGER.info("Loading Audio Flamingo model %s on %s", self.model_name, self.device)
+        LOGGER.info(
+            "Loading Audio Flamingo model %s on %s with float32 precision",
+            self.model_name,
+            self.device,
+        )
         try:
             processor = AutoProcessor.from_pretrained(self.model_name, **common)
             model = AudioFlamingo3ForConditionalGeneration.from_pretrained(
@@ -338,9 +342,8 @@ def _move_inputs(inputs: Any, device: str) -> Any:
     """Move processor tensors to the model device without changing their dtype.
 
     Audio Flamingo's processor emits float32 audio features. Preserve those
-    processor-selected dtypes: casting every floating tensor to the model's BF16
-    dtype caused the audio encoder to fail with
-    ``expected scalar type Float but found BFloat16``.
+    processor-selected dtypes so they match the float32 model used by this
+    adapter.
     """
 
     if not isinstance(inputs, Mapping):
@@ -357,11 +360,12 @@ def _move_inputs(inputs: Any, device: str) -> Any:
     return values
 
 
-def _dtype_for_device(torch: Any, device: str) -> Any:
-    if device.startswith("cuda"):
-        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    if device == "mps":
-        return torch.float16
+def _dtype_for_device(torch: Any, _device: str) -> Any:
+    # Audio Flamingo 3 currently mixes modules that must remain float32 with
+    # modules that otherwise accept BF16. Loading the whole model in BF16 caused
+    # alternating Float/BFloat16 failures in the audio encoder. Use one explicit
+    # dtype for the beginner baseline; the 8B checkpoint therefore needs a
+    # high-memory accelerator.
     return torch.float32
 
 

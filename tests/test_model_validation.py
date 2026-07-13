@@ -8,6 +8,7 @@ import pytest
 from smartedit.extraction.narration_features import extract_narration_features
 from smartedit.models.audio_flamingo_adapter import (
     AudioModelError,
+    _dtype_for_device,
     _move_inputs,
     validate_audio_model_output,
 )
@@ -130,6 +131,17 @@ def test_audio_flamingo_moves_inputs_without_casting_audio_dtype() -> None:
     assert audio_features.dtype == "float32"
     assert audio_features.calls == [{"device": "cuda"}]
     assert token_ids.calls == [{"device": "cuda"}]
+
+
+def test_audio_flamingo_uses_float32_model_precision() -> None:
+    class _FakeTorch:
+        float32 = object()
+
+    torch = _FakeTorch()
+
+    assert _dtype_for_device(torch, "cuda") is torch.float32
+    assert _dtype_for_device(torch, "mps") is torch.float32
+    assert _dtype_for_device(torch, "cpu") is torch.float32
 
 
 class _WordTimestampMutatingPipeline:

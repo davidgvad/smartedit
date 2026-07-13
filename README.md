@@ -325,6 +325,11 @@ valid but can be extremely slow; Audio Flamingo will commonly fall back to
 librosa on modest hardware. Quantization is not enabled automatically because it
 changes dependencies, accuracy, and device support.
 
+The baseline Audio Flamingo adapter deliberately loads the model in float32.
+Mixed BF16/float32 execution can fail inside the current audio encoder, while an
+8B float32 model needs roughly 32 GB for weights alone. A high-memory GPU such as
+an L40S 48 GB or larger is therefore recommended for this adapter.
+
 ## Limitations
 
 - Sampled frames can miss brief text, effects, or transitions between samples.
