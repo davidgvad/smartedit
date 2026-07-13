@@ -206,16 +206,22 @@ frames it was not given; compatibility is considered later alongside Qwen
 context.
 
 Audio Flamingo is a free-text generator and does not guarantee schema-constrained
-decoding. The adapter first requests and validates JSON. If that fails, it tries
+decoding. The adapter first saves a natural-language caption of the speech,
+music, environmental sound, and mixing it heard. That caption grounds the
+structured request and distinguishes audio-perception problems from formatting
+problems. The adapter then requests and validates JSON. If that fails, it tries
 one formatting repair; the exact marker-only response
-<code>[END OF JSON]</code> skips that redundant repair. It then makes one fresh
-request for nine strictly parsed tagged fields. A successful compatibility
-response is labeled
-<code>selected_format: tagged_record_compatibility</code> in
+<code>[END OF JSON]</code> skips that redundant repair. It then requests nine
+strictly parsed tagged fields. A malformed tagged response receives one repair
+request containing the exact unknown, duplicate, or missing fields; the parser
+never fills them itself. A successful compatibility response is labeled
+<code>tagged_record_compatibility</code> or <code>tagged_record_repair</code> in
 <code>raw_model_outputs</code> and uses an empty evidence list because the tagged
-format makes no timestamp claims. If that also fails, the pipeline activates the
-explicitly non-equivalent librosa fallback. Raw attempts and token-prefix
-decoding diagnostics are retained.
+format makes no timestamp claims. If the repair also fails, the pipeline
+activates the explicitly non-equivalent librosa fallback. Raw attempts and
+token-prefix decoding diagnostics are retained. Diagnostics include processor
+tensor shapes, dtypes, finite/nonzero checks, and mask sums, but never tensor
+values.
 
 Librosa features are calculated independently even when Audio Flamingo works:
 
