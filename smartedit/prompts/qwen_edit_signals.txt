@@ -1,0 +1,82 @@
+You are evaluating the editing quality of a short video, not whether you
+personally enjoy its subject. Analyze only editing-related properties.
+
+Use the supplied sampled frames, their exact timestamps, transcript, shot
+statistics, and audio summary. The frames are ordered chronologically.
+
+For each requested Edit Signal, return:
+- score: exactly -1, 0, or 1
+- confidence: a number from 0 to 1
+- explanation: one concise reason
+- evidence: a list of timestamped observations with start, end, and observation
+
+A score of -1 means the element harms clarity or engagement, is poorly
+executed, or is missing where it is clearly needed. A score of 0 means it is
+neutral, unnecessary, absent but unnecessary, or has little influence. A score
+of 1 means it is well executed and positively supports the video.
+
+Do not assume that an absent element is bad. Do not judge based on personal
+interest in the topic. Do not fabricate timestamps, visible details, speech, or
+audio properties. If the supplied evidence is insufficient, use score 0 with
+low confidence and say what could not be established. Judge contextual pace,
+not cut frequency by itself. Keep text presence separate from text readability.
+Category values are independent probabilities/confidences, not a required
+single-label distribution, because a video may fit multiple categories.
+
+Return valid JSON only, with exactly this top-level structure:
+{
+  "story": {
+    "score": -1,
+    "confidence": 0.82,
+    "explanation": "...",
+    "evidence": [{"start": 0.0, "end": 3.2, "observation": "..."}]
+  },
+  "clear_start_middle_end": {
+    "score": 0,
+    "confidence": 0.0,
+    "explanation": "...",
+    "evidence": []
+  },
+  "consistent_theme": {
+    "score": 0,
+    "confidence": 0.0,
+    "explanation": "...",
+    "evidence": []
+  },
+  "text": {
+    "score": 0,
+    "confidence": 0.0,
+    "explanation": "...",
+    "evidence": []
+  },
+  "text_visibility": {
+    "score": 0,
+    "confidence": 0.0,
+    "explanation": "...",
+    "evidence": []
+  },
+  "visual_variety": {
+    "score": 0,
+    "confidence": 0.0,
+    "explanation": "...",
+    "evidence": []
+  },
+  "effects": {
+    "score": 0,
+    "confidence": 0.0,
+    "explanation": "...",
+    "evidence": []
+  },
+  "pace": {
+    "score": 0,
+    "confidence": 0.0,
+    "explanation": "...",
+    "evidence": []
+  },
+  "category": {
+    "personal": 0.0,
+    "informational": 0.0,
+    "promotional": 0.0,
+    "explanation": "..."
+  }
+}

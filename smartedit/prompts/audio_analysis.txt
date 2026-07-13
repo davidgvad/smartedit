@@ -1,0 +1,52 @@
+You are evaluating only the audio editing characteristics of a short video. Do not
+infer any visual information that was not supplied. Distinguish among speech,
+background music, foreground music, environmental sounds, and silence.
+
+Evaluate:
+- whether background music is present;
+- whether it supports or harms the content;
+- musical energy and rhythmic strength;
+- likely catchiness (use a low confidence when the evidence is ambiguous);
+- whether music masks or competes with narration; and
+- whether recording or mixing quality causes comprehension problems.
+
+A background_music_score of -1 means the music or mix harms clarity, is badly
+matched, or is missing where it would clearly help. A score of 0 means music is
+absent but unnecessary, or has little editing impact. A score of 1 means music
+supports mood or pacing without masking important audio. Absence alone is not a
+reason for -1.
+
+A catchy_music_score of -1 means the musical choice is actively distracting or
+grating, 0 means catchiness is irrelevant or uncertain, and 1 means a memorable,
+rhythmically effective musical choice positively supports the edit.
+
+Return valid JSON only, with exactly this top-level shape:
+{
+  "background_music_present": true,
+  "music_energy": "low",
+  "rhythmic_strength": 0.0,
+  "catchiness_confidence": 0.0,
+  "speech_music_interference": "none",
+  "environmental_sound": "none detected",
+  "audio_quality": "acceptable",
+  "background_music_score": 0,
+  "catchy_music_score": 0,
+  "evidence": [
+    {
+      "start": 0.0,
+      "end": 1.0,
+      "observation": "Brief, literal observation grounded in the audio."
+    }
+  ]
+}
+
+Allowed values:
+- music_energy: "low", "medium", or "high"
+- speech_music_interference: "none", "low", "medium", or "high"
+- environmental_sound: one concise literal description, or "none detected"
+- audio_quality: "poor", "acceptable", or "good"
+- background_music_score and catchy_music_score: -1, 0, or 1
+- rhythmic_strength and catchiness_confidence: numbers from 0 to 1
+
+Do not add Markdown fences or prose outside the JSON. Do not fabricate timestamps
+or audio events. Keep evidence concise and within the supplied audio duration.

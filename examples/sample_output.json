@@ -1,0 +1,244 @@
+{
+  "video": {
+    "path": "/videos/coffee_pour_demo.mp4",
+    "duration_seconds": 32.4,
+    "fps": 30.0,
+    "width": 1080,
+    "height": 1920,
+    "has_audio": true,
+    "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+    "video_codec": "h264",
+    "audio_codec": "aac",
+    "rotation": 0
+  },
+  "objective_measurements": {
+    "shot_count": 8,
+    "cut_count": 7,
+    "cut_timestamps": [3.8, 7.6, 11.9, 16.2, 21.1, 26.0, 29.4],
+    "average_shot_duration": 4.05,
+    "median_shot_duration": 4.05,
+    "minimum_shot_duration": 3.0,
+    "maximum_shot_duration": 4.9,
+    "cuts_per_minute": 12.963,
+    "shot_duration_variance": 0.353,
+    "speech_duration": 22.7,
+    "speech_coverage": 0.701,
+    "words_per_minute": 145.4,
+    "long_silent_gaps": [
+      {"start": 0.0, "end": 2.2},
+      {"start": 27.8, "end": 32.4}
+    ],
+    "estimated_tempo_bpm": 112.3,
+    "rms_energy": 0.041,
+    "onset_strength": 1.73,
+    "spectral_centroid_hz": 1842.6,
+    "zero_crossing_rate": 0.071,
+    "harmonic_percussive_ratio": 1.84
+  },
+  "signals": {
+    "length": {
+      "score": 1,
+      "confidence": 0.678,
+      "explanation": "The duration falls within the broad short-form range for the likely informational purpose.",
+      "evidence": [
+        {"start": 0.0, "end": 32.4, "observation": "Video duration is 32.40 seconds."}
+      ],
+      "sources": ["ffprobe", "qwen3_vl"],
+      "conflicts": []
+    },
+    "pace": {
+      "score": 1,
+      "confidence": 0.82,
+      "explanation": "The edit gives each preparation step enough time while cuts follow the spoken instructions.",
+      "evidence": [
+        {"start": 3.8, "end": 7.6, "observation": "The cut moves from measuring beans to grinding as narration changes step."},
+        {"start": 0.0, "end": 32.4, "observation": "8 shots; 13.0 cuts/minute; average shot 4.05 seconds."},
+        {"start": 0.0, "end": 32.4, "observation": "Speech covers 70% at approximately 145 WPM."}
+      ],
+      "sources": ["qwen3_vl", "transnet_v2", "whisper"],
+      "conflicts": []
+    },
+    "visual_variety": {
+      "score": 1,
+      "confidence": 0.86,
+      "explanation": "Wide, close-up, and overhead views alternate to show both process and detail.",
+      "evidence": [
+        {"start": 7.6, "end": 16.2, "observation": "The framing changes from a grinder close-up to an overhead filter setup."}
+      ],
+      "sources": ["qwen3_vl"],
+      "conflicts": []
+    },
+    "text": {
+      "score": 1,
+      "confidence": 0.91,
+      "explanation": "Short measurement labels add useful details without duplicating the full narration.",
+      "evidence": [
+        {"start": 3.8, "end": 7.6, "observation": "The label '20 g coffee' appears while the beans are measured."},
+        {"start": 16.2, "end": 21.1, "observation": "The label '300 g water' appears during the pour."}
+      ],
+      "sources": ["qwen3_vl"],
+      "conflicts": []
+    },
+    "text_visibility": {
+      "score": 1,
+      "confidence": 0.88,
+      "explanation": "Labels use high contrast, remain inside the safe area, and persist long enough to read.",
+      "evidence": [
+        {"start": 3.8, "end": 7.6, "observation": "White measurement text has a dark backing and remains unobstructed."}
+      ],
+      "sources": ["qwen3_vl"],
+      "conflicts": []
+    },
+    "narration": {
+      "score": 1,
+      "confidence": 0.68,
+      "explanation": "Narration is sustained and delivered at a workable rate without evidence of serious masking.",
+      "evidence": [
+        {"start": 0.0, "end": 32.4, "observation": "Detected speech duration 22.70s (70% coverage), approximately 145 WPM."}
+      ],
+      "sources": ["whisper", "audio_flamingo_3", "qwen3_vl"],
+      "conflicts": []
+    },
+    "background_music": {
+      "score": 1,
+      "confidence": 0.78,
+      "explanation": "Background music is judged to support the content without serious speech masking.",
+      "evidence": [
+        {"start": 0.0, "end": 32.4, "observation": "A low-level rhythmic instrumental bed remains behind narration."}
+      ],
+      "sources": ["audio_flamingo_3"],
+      "conflicts": []
+    },
+    "catchy_music": {
+      "score": 0,
+      "confidence": 0.61,
+      "explanation": "Music is present, but catchiness has little established editing impact.",
+      "evidence": [
+        {"start": 0.0, "end": 32.4, "observation": "The instrumental rhythm is steady but not foregrounded."}
+      ],
+      "sources": ["audio_flamingo_3"],
+      "conflicts": []
+    },
+    "transitions": {
+      "score": 0,
+      "confidence": 0.45,
+      "explanation": "Cut boundaries were measured, but no reliable evidence shows that transition styling helps or harms; simple cuts may be sufficient.",
+      "evidence": [
+        {"start": 0.0, "end": 32.4, "observation": "TransNet-V2 detected 7 cuts between shots."}
+      ],
+      "sources": ["transnet_v2", "qwen3_vl"],
+      "conflicts": []
+    },
+    "effects": {
+      "score": 0,
+      "confidence": 0.76,
+      "explanation": "No prominent visual effects are used, and none are needed for this direct demonstration.",
+      "evidence": [],
+      "sources": ["qwen3_vl"],
+      "conflicts": []
+    },
+    "story": {
+      "score": 1,
+      "confidence": 0.9,
+      "explanation": "The video progresses coherently from ingredients through brewing to the finished drink.",
+      "evidence": [
+        {"start": 0.0, "end": 3.8, "observation": "The opening identifies the drink and shows the ingredients."},
+        {"start": 29.4, "end": 32.4, "observation": "The closing shot presents the completed coffee."}
+      ],
+      "sources": ["qwen3_vl"],
+      "conflicts": []
+    },
+    "clear_start_middle_end": {
+      "score": 1,
+      "confidence": 0.88,
+      "explanation": "An introduction, sequential preparation, and final reveal create distinct structural phases.",
+      "evidence": [
+        {"start": 0.0, "end": 3.8, "observation": "Opening title and ingredients establish the goal."},
+        {"start": 3.8, "end": 29.4, "observation": "The middle covers measurement, grinding, setup, and pouring."},
+        {"start": 29.4, "end": 32.4, "observation": "The finished drink closes the sequence."}
+      ],
+      "sources": ["qwen3_vl"],
+      "conflicts": []
+    },
+    "consistent_theme": {
+      "score": 1,
+      "confidence": 0.9,
+      "explanation": "Color, lighting, typography, and subject remain consistent throughout the tutorial.",
+      "evidence": [
+        {"start": 0.0, "end": 32.4, "observation": "Warm tabletop imagery and the same compact label style persist across all sampled shots."}
+      ],
+      "sources": ["qwen3_vl"],
+      "conflicts": []
+    }
+  },
+  "category": {
+    "personal": 0.08,
+    "informational": 0.91,
+    "promotional": 0.25
+  },
+  "raw_model_outputs": {
+    "transnet_v2": {
+      "model_name": "transnet_v2",
+      "threshold": 0.5,
+      "frame_count": 972,
+      "fps": 30.0,
+      "cut_frames": [114, 228, 357, 486, 633, 780, 882],
+      "cut_timestamps": [3.8, 7.6, 11.9, 16.2, 21.1, 26.0, 29.4]
+    },
+    "whisper": {
+      "model_name": "openai/whisper-large-v3-turbo",
+      "transcript": "Here is a simple pour-over recipe. Measure twenty grams of coffee and grind it medium fine. Rinse the filter, add the grounds, and pour three hundred grams of water in slow circles. Let it drain, then serve.",
+      "detected_language": "en",
+      "segments": [
+        {"start": 2.2, "end": 8.1, "text": "Here is a simple pour-over recipe. Measure twenty grams of coffee."},
+        {"start": 8.3, "end": 17.0, "text": "Grind it medium fine. Rinse the filter and add the grounds."},
+        {"start": 17.2, "end": 27.8, "text": "Pour three hundred grams of water in slow circles. Let it drain, then serve."}
+      ]
+    },
+    "audio_model": {
+      "adapter_used": "audio_flamingo_3",
+      "used_librosa_fallback": false,
+      "warnings": [],
+      "backend_output": {
+        "model_name": "nvidia/audio-flamingo-3-hf",
+        "parsed": {
+          "background_music_present": true,
+          "music_energy": "medium",
+          "rhythmic_strength": 0.67,
+          "catchiness_confidence": 0.49,
+          "speech_music_interference": "low",
+          "environmental_sound": "quiet water pouring and light kitchen handling sounds",
+          "audio_quality": "good",
+          "background_music_score": 1,
+          "catchy_music_score": 0,
+          "evidence": [
+            {"start": 0.0, "end": 32.4, "observation": "Soft instrumental music remains under clear narration."}
+          ]
+        }
+      }
+    },
+    "qwen3_vl": {
+      "model_name": "Qwen/Qwen3-VL-4B-Instruct",
+      "parsed": {
+        "story": {
+          "score": 1,
+          "confidence": 0.9,
+          "explanation": "The process progresses from ingredients to finished drink.",
+          "evidence": [
+            {"start": 0.0, "end": 3.8, "observation": "Ingredients establish the task."},
+            {"start": 29.4, "end": 32.4, "observation": "The finished drink closes the task."}
+          ]
+        },
+        "category": {
+          "personal": 0.08,
+          "informational": 0.91,
+          "promotional": 0.25,
+          "explanation": "The clip primarily teaches a repeatable preparation process."
+        }
+      }
+    }
+  },
+  "warnings": [
+    "Illustrative sample only; no video is bundled and these values were not generated during installation."
+  ]
+}
