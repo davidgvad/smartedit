@@ -264,6 +264,90 @@ def test_audio_flamingo_retries_plain_text_once_and_preserves_responses(
     )
 
 
+def test_audio_flamingo_token_limited_json_skips_repair_and_uses_tagged_format(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+    adapter = AudioFlamingoAdapter()
+    adapter._model = object()
+    adapter._processor = object()
+    adapter._torch = object()
+    responses = iter(
+        [
+            "A voice performs over a hip-hop beat.",
+            "A repeated non-JSON observation.",
+            _tagged_audio_payload(),
+        ]
+    )
+    calls = 0
+
+    def generate(_messages: list[dict[str, Any]]) -> str:
+        nonlocal calls
+        calls += 1
+        response = next(responses)
+        if calls == 2:
+            adapter._last_generation_diagnostics = {
+                "continuation_token_count": adapter.max_new_tokens
+            }
+        return response
+
+    monkeypatch.setattr(adapter, "_generate_text", generate)
+
+    result = adapter._analyze(audio_path, duration_seconds=5.0)
+
+    assert result is not None
+    assert calls == 3
+    assert adapter.last_raw_output["status"] == "ok"
+    assert adapter.last_raw_output["json_status"] == "truncated_at_token_limit"
+    assert adapter.last_raw_output["retry_used"] is False
+    assert adapter.last_raw_output["attempts"][0]["hit_max_new_tokens"] is True
+    assert [item["format"] for item in adapter.last_raw_output["attempts"]] == [
+        "json",
+        "tagged_record",
+    ]
+
+
+def test_audio_flamingo_json_repair_inference_failure_still_uses_tagged_format(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+    adapter = AudioFlamingoAdapter()
+    adapter._model = object()
+    adapter._processor = object()
+    adapter._torch = object()
+    calls = 0
+
+    def generate(_messages: list[dict[str, Any]]) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return "A speaker performs over background music."
+        if calls == 2:
+            return "not JSON"
+        if calls == 3:
+            raise AudioModelError("simulated long-context generation failure")
+        return _tagged_audio_payload()
+
+    monkeypatch.setattr(adapter, "_generate_text", generate)
+
+    result = adapter._analyze(audio_path, duration_seconds=5.0)
+
+    assert result is not None
+    assert calls == 4
+    assert adapter.last_raw_output["status"] == "ok"
+    assert adapter.last_raw_output["json_status"] == "format_retry_inference_failed"
+    assert "long-context" in adapter.last_raw_output["json_inference_error"]
+    assert [item["format"] for item in adapter.last_raw_output["attempts"]] == [
+        "json",
+        "json_repair",
+        "tagged_record",
+    ]
+    assert "long-context" in adapter.last_raw_output["attempts"][1]["inference_error"]
+    assert adapter.last_raw_output["selected_format"] == "tagged_record_compatibility"
+
+
 def test_audio_flamingo_stops_after_one_json_and_one_tagged_repair(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

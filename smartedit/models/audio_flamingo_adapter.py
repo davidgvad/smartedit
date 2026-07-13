@@ -239,28 +239,38 @@ class AudioFlamingoAdapter(AudioModelAdapter):
         ]
         current_messages = messages
         for attempt_number in (1, 2):
+            attempt_format = "json" if attempt_number == 1 else "json_repair"
             self._last_generation_diagnostics = None
             try:
                 raw_text = self._generate_text(current_messages)
             except AudioModelError as exc:
-                self.last_raw_output.update(
-                    {
-                        "status": (
-                            "format_retry_inference_failed"
-                            if attempt_number == 2
-                            else "inference_failed"
-                        ),
-                        "inference_error": str(exc),
-                    }
+                failure_status = (
+                    "format_retry_inference_failed"
+                    if attempt_number == 2
+                    else "json_inference_failed"
                 )
+                failed_attempt: dict[str, Any] = {
+                    "attempt": attempt_number,
+                    "format": attempt_format,
+                    "inference_error": str(exc),
+                }
                 if self._last_generation_diagnostics is not None:
-                    self.last_raw_output["failed_generation_diagnostics"] = (
+                    failed_attempt["generation_diagnostics"] = (
                         self._last_generation_diagnostics
                     )
-                raise
+                self.last_raw_output["attempts"].append(failed_attempt)
+                self.last_raw_output["json_status"] = failure_status
+                self.last_raw_output["json_inference_error"] = str(exc)
+                LOGGER.warning(
+                    "Audio Flamingo %s inference failed; continuing with the "
+                    "shorter tagged format: %s",
+                    attempt_format,
+                    exc,
+                )
+                break
             attempt: dict[str, Any] = {
                 "attempt": attempt_number,
-                "format": "json" if attempt_number == 1 else "json_repair",
+                "format": attempt_format,
                 "raw_text": raw_text,
             }
             if self._last_generation_diagnostics is not None:
@@ -282,6 +292,18 @@ class AudioFlamingoAdapter(AudioModelAdapter):
                     LOGGER.warning(
                         "Audio Flamingo generated only [END OF JSON]; switching "
                         "to the tagged compatibility format"
+                    )
+                    break
+                if _generation_hit_token_limit(
+                    self._last_generation_diagnostics,
+                    self.max_new_tokens,
+                ):
+                    attempt["hit_max_new_tokens"] = True
+                    self.last_raw_output["json_status"] = "truncated_at_token_limit"
+                    LOGGER.warning(
+                        "Audio Flamingo's JSON response reached the generation "
+                        "limit; skipping the long repair context and switching "
+                        "to the tagged format"
                     )
                     break
                 if attempt_number == 2:
@@ -605,6 +627,18 @@ def _is_json_end_marker(text: str) -> bool:
     """Recognize only the exact literal response observed from the checkpoint."""
 
     return text.strip() == "[END OF JSON]"
+
+
+def _generation_hit_token_limit(
+    diagnostics: Mapping[str, Any] | None,
+    max_new_tokens: int,
+) -> bool:
+    """Detect a response that consumed the full configured generation budget."""
+
+    if not isinstance(diagnostics, Mapping):
+        return False
+    value = diagnostics.get("continuation_token_count")
+    return type(value) is int and value >= max_new_tokens
 
 
 def _audio_caption_messages(audio_path: Path, duration: float) -> list[dict[str, Any]]:
