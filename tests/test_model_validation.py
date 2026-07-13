@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from smartedit.extraction.audio_features import extract_audio_features
 from smartedit.extraction.narration_features import extract_narration_features
 from smartedit.models.audio_flamingo_adapter import (
+    AudioFlamingoAdapter,
     AudioModelError,
     _dtype_for_device,
     _move_inputs,
@@ -142,6 +145,110 @@ def test_audio_flamingo_uses_float32_model_precision() -> None:
     assert _dtype_for_device(torch, "cuda") is torch.float32
     assert _dtype_for_device(torch, "mps") is torch.float32
     assert _dtype_for_device(torch, "cpu") is torch.float32
+
+
+def test_audio_flamingo_retries_plain_text_once_and_preserves_responses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+    adapter = AudioFlamingoAdapter()
+    adapter._model = object()
+    adapter._processor = object()
+    adapter._torch = object()
+    valid_json = json.dumps(_audio_payload(0.0, 5.0))
+    responses = iter(["The music is energetic.", valid_json])
+    messages_seen: list[list[dict[str, Any]]] = []
+
+    def generate(messages: list[dict[str, Any]]) -> str:
+        messages_seen.append(messages)
+        return next(responses)
+
+    monkeypatch.setattr(adapter, "_generate_text", generate)
+
+    result = adapter._analyze(audio_path, duration_seconds=5.0)
+
+    assert result is not None
+    assert result.background_music_present is True
+    assert len(messages_seen) == 2
+    assert adapter.last_raw_output["retry_used"] is True
+    assert adapter.last_raw_output["selected_attempt"] == 2
+    assert [item["raw_text"] for item in adapter.last_raw_output["attempts"]] == [
+        "The music is energetic.",
+        valid_json,
+    ]
+    retry_text = messages_seen[1][-1]["content"][0]["text"]
+    assert "exactly one valid JSON object" in retry_text
+    assert any(
+        item.get("type") == "audio"
+        for message in messages_seen[1]
+        for item in message.get("content", [])
+    )
+
+
+def test_audio_flamingo_stops_after_one_invalid_format_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+    adapter = AudioFlamingoAdapter()
+    adapter._model = object()
+    adapter._processor = object()
+    adapter._torch = object()
+    responses = iter(["first plain response", "second plain response", "unused"])
+    calls = 0
+
+    def generate(_messages: list[dict[str, Any]]) -> str:
+        nonlocal calls
+        calls += 1
+        return next(responses)
+
+    monkeypatch.setattr(adapter, "_generate_text", generate)
+
+    with pytest.raises(AudioModelError, match="after one formatting retry"):
+        adapter._analyze(audio_path, duration_seconds=5.0)
+
+    assert calls == 2
+    assert adapter.last_raw_output["status"] == "invalid_after_format_retry"
+    assert [item["raw_text"] for item in adapter.last_raw_output["attempts"]] == [
+        "first plain response",
+        "second plain response",
+    ]
+    assert all(
+        "validation_error" in item for item in adapter.last_raw_output["attempts"]
+    )
+
+
+def test_audio_fallback_preserves_failed_contextual_model_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _FailingAdapter:
+        name = "audio_flamingo_3"
+        last_raw_output = {
+            "attempts": [{"attempt": 1, "raw_text": "plain response"}]
+        }
+
+        def analyze(self, _path: Path, **_kwargs: Any) -> None:
+            raise AudioModelError("invalid structured output")
+
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+    monkeypatch.setattr(
+        "smartedit.extraction.audio_features.compute_librosa_features",
+        lambda _path: None,
+    )
+    adapter = _FailingAdapter()
+
+    result = extract_audio_features(
+        audio_path,
+        5.0,
+        audio_adapter=adapter,  # type: ignore[arg-type]
+        use_librosa_fallback=True,
+    )
+
+    assert result.used_librosa_fallback is True
+    assert result.raw_output is not None
+    assert result.raw_output["failed_contextual_model_output"] == adapter.last_raw_output
 
 
 class _WordTimestampMutatingPipeline:

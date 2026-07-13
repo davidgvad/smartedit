@@ -97,6 +97,7 @@ def extract_audio_features(
                     "fallback activated."
                 ),
                 additional_warnings=warnings,
+                failed_contextual_model_output=_adapter_raw_output(audio_adapter),
             )
         return AudioAnalysis(
             objective=objective,

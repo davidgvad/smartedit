@@ -164,6 +164,11 @@ class AudioFlamingoAdapter(AudioModelAdapter):
         assert self._torch is not None
 
         prompt = _load_prompt(kwargs.get("prompt_path") or self.prompt_path)
+        prompt += (
+            f"\n\nThe audio duration is exactly {duration:.3f} seconds. "
+            "Use only timestamps within that duration. If reliable timestamped "
+            "evidence is unavailable, return an empty evidence array."
+        )
         messages = [
             {
                 "role": "user",
@@ -174,6 +179,70 @@ class AudioFlamingoAdapter(AudioModelAdapter):
             }
         ]
         LOGGER.info("Analyzing %s with Audio Flamingo", audio_path.name)
+        self.last_raw_output = {
+            "model_name": self.model_name,
+            "attempts": [],
+            "retry_used": False,
+        }
+        current_messages = messages
+        for attempt_number in (1, 2):
+            try:
+                raw_text = self._generate_text(current_messages)
+            except AudioModelError as exc:
+                self.last_raw_output.update(
+                    {
+                        "status": (
+                            "format_retry_inference_failed"
+                            if attempt_number == 2
+                            else "inference_failed"
+                        ),
+                        "inference_error": str(exc),
+                    }
+                )
+                raise
+            attempt: dict[str, Any] = {
+                "attempt": attempt_number,
+                "raw_text": raw_text,
+            }
+            self.last_raw_output["attempts"].append(attempt)
+            self.last_raw_output["raw_text"] = raw_text
+            try:
+                parsed = _parse_json_object(raw_text)
+                validated = validate_audio_model_output(parsed, duration)
+            except AudioModelError as exc:
+                attempt["validation_error"] = str(exc)
+                if attempt_number == 2:
+                    self.last_raw_output["status"] = "invalid_after_format_retry"
+                    raise AudioModelError(
+                        "Audio Flamingo failed to return valid structured JSON after "
+                        f"one formatting retry: {exc}"
+                    ) from exc
+                LOGGER.warning(
+                    "Audio Flamingo returned invalid structured output; retrying JSON "
+                    "format once: %s",
+                    exc,
+                )
+                self.last_raw_output["retry_used"] = True
+                current_messages = _format_retry_messages(messages, raw_text, duration)
+                continue
+
+            self.last_raw_output.update(
+                {
+                    "status": "ok",
+                    "parsed": validated,
+                    "selected_attempt": attempt_number,
+                }
+            )
+            return audio_judgment_from_dict(validated)
+
+        raise AssertionError("Audio Flamingo formatting loop ended unexpectedly")
+
+    def _generate_text(self, messages: list[dict[str, Any]]) -> str:
+        """Generate one response for an already prepared audio conversation."""
+
+        assert self._model is not None
+        assert self._processor is not None
+        assert self._torch is not None
         try:
             inputs = self._processor.apply_chat_template(
                 messages,
@@ -191,24 +260,20 @@ class AudioFlamingoAdapter(AudioModelAdapter):
                 )
             input_length = int(inputs["input_ids"].shape[-1])
             generated_ids = output_ids[:, input_length:]
-            raw_text = self._processor.batch_decode(
+            decoded = self._processor.batch_decode(
                 generated_ids,
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=False,
-            )[0]
+            )
+            if not decoded:
+                raise AudioModelError("Audio Flamingo decoded an empty response batch")
+            return str(decoded[0])
+        except AudioModelError:
+            raise
         except Exception as exc:
             raise AudioModelError(
                 f"Audio Flamingo inference failed: {type(exc).__name__}: {exc}"
             ) from exc
-
-        parsed = _parse_json_object(raw_text)
-        validated = validate_audio_model_output(parsed, duration)
-        self.last_raw_output = {
-            "model_name": self.model_name,
-            "raw_text": raw_text,
-            "parsed": validated,
-        }
-        return audio_judgment_from_dict(validated)
 
     def _unload(self) -> None:
         self._processor = None
@@ -313,17 +378,45 @@ def _parse_json_object(text: str) -> dict[str, Any]:
         if lines and lines[-1].strip() == "```":
             lines.pop()
         stripped = "\n".join(lines).strip()
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start < 0 or end <= start:
-        raise AudioModelError("Audio Flamingo did not return a JSON object")
-    try:
-        result = json.loads(stripped[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise AudioModelError(f"Audio Flamingo returned invalid JSON: {exc.msg}") from exc
-    if not isinstance(result, dict):
-        raise AudioModelError("Audio Flamingo JSON must be an object")
-    return result
+    decoder = json.JSONDecoder()
+    errors: list[str] = []
+    for start, character in enumerate(stripped):
+        if character != "{":
+            continue
+        try:
+            result, _ = decoder.raw_decode(stripped[start:])
+        except json.JSONDecodeError as exc:
+            errors.append(exc.msg)
+            continue
+        if isinstance(result, dict):
+            return result
+    if errors:
+        raise AudioModelError(f"Audio Flamingo returned invalid JSON: {errors[0]}")
+    raise AudioModelError("Audio Flamingo did not return a JSON object")
+
+
+def _format_retry_messages(
+    original_messages: list[dict[str, Any]], raw_text: str, duration: float
+) -> list[dict[str, Any]]:
+    repair_prompt = (
+        "Your previous response was not valid for the requested schema. Return "
+        "exactly one valid JSON object with all fields from the original schema. "
+        "Do not include Markdown, commentary, or reasoning outside the JSON. Do "
+        "not add audio events or timestamps that you did not observe. If reliable "
+        f"timestamps within 0.000 to {duration:.3f} seconds are unavailable, use "
+        '"evidence": [].'
+    )
+    return [
+        *original_messages,
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": raw_text}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": repair_prompt}],
+        },
+    ]
 
 
 def _load_prompt(path: str | Path | None) -> str:

@@ -147,6 +147,7 @@ def build_librosa_fallback_analysis(
     *,
     reason: str | None = None,
     additional_warnings: list[str] | None = None,
+    failed_contextual_model_output: dict[str, Any] | None = None,
 ) -> AudioAnalysis:
     """Package existing measurements as a visibly limited fallback result."""
 
@@ -172,6 +173,8 @@ def build_librosa_fallback_analysis(
         "fallback_estimates": estimates,
         "limitations": limitations,
     }
+    if failed_contextual_model_output:
+        raw_output["failed_contextual_model_output"] = failed_contextual_model_output
     return AudioAnalysis(
         objective=objective,
         judgment=None,

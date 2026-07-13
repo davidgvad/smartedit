@@ -31,13 +31,7 @@ Return valid JSON only, with exactly this top-level shape:
   "audio_quality": "acceptable",
   "background_music_score": 0,
   "catchy_music_score": 0,
-  "evidence": [
-    {
-      "start": 0.0,
-      "end": 1.0,
-      "observation": "Brief, literal observation grounded in the audio."
-    }
-  ]
+  "evidence": []
 }
 
 Allowed values:
@@ -49,4 +43,5 @@ Allowed values:
 - rhythmic_strength and catchiness_confidence: numbers from 0 to 1
 
 Do not add Markdown fences or prose outside the JSON. Do not fabricate timestamps
-or audio events. Keep evidence concise and within the supplied audio duration.
+or audio events. Keep evidence concise and within the supplied audio duration. If
+you cannot ground a timestamp reliably, leave evidence empty.
