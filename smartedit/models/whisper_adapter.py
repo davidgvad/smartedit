@@ -104,7 +104,8 @@ class WhisperAdapter(BaseModelAdapter[str | Path | None, NarrationAnalysis]):
                 else "Check the checkpoint license, Transformers version, and available memory."
             )
             raise WhisperAdapterError(
-                f"Could not load Whisper checkpoint {self.model_name!r}. {hint}"
+                f"Could not load Whisper checkpoint {self.model_name!r}. {hint} "
+                f"Underlying error: {type(exc).__name__}: {exc}"
             ) from exc
 
         self._torch = torch
@@ -197,7 +198,10 @@ class WhisperAdapter(BaseModelAdapter[str | Path | None, NarrationAnalysis]):
             try:
                 output = self._run_pipeline(pipeline_input, return_timestamps=True)
             except Exception as segment_error:
-                raise WhisperAdapterError("Whisper transcription failed") from segment_error
+                raise WhisperAdapterError(
+                    "Whisper transcription failed: "
+                    f"{type(segment_error).__name__}: {segment_error}"
+                ) from segment_error
 
         normalized = _normalize_pipeline_output(output, word_timestamps=word_timestamps)
         normalized["word_timestamps_supported"] = word_timestamps
@@ -270,7 +274,9 @@ def _load_audio_mono_16khz(path: Path) -> Any:
     try:
         waveform, _ = librosa.load(str(path), sr=16_000, mono=True)
     except Exception as exc:
-        raise WhisperAdapterError(f"Could not decode audio file: {path}") from exc
+        raise WhisperAdapterError(
+            f"Could not decode audio file {path}: {type(exc).__name__}: {exc}"
+        ) from exc
     waveform = np.asarray(waveform, dtype=np.float32)
     waveform = np.nan_to_num(waveform, nan=0.0, posinf=0.0, neginf=0.0)
     return waveform

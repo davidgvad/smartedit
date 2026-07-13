@@ -139,7 +139,8 @@ class AudioFlamingoAdapter(AudioModelAdapter):
                 else "Check the model license, hardware memory, and Transformers version."
             )
             raise AudioModelError(
-                f"Could not load Audio Flamingo checkpoint {self.model_name!r}. {hint}"
+                f"Could not load Audio Flamingo checkpoint {self.model_name!r}. {hint} "
+                f"Underlying error: {type(exc).__name__}: {exc}"
             ) from exc
 
         self._torch = torch
@@ -192,7 +193,9 @@ class AudioFlamingoAdapter(AudioModelAdapter):
                 clean_up_tokenization_spaces=False,
             )[0]
         except Exception as exc:
-            raise AudioModelError("Audio Flamingo inference failed") from exc
+            raise AudioModelError(
+                f"Audio Flamingo inference failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
         parsed = _parse_json_object(raw_text)
         validated = validate_audio_model_output(parsed, duration)

@@ -231,7 +231,10 @@ class SmartEditPipeline:
             return result, raw
         except Exception as exc:
             warning = f"Whisper unavailable; narration measurements are missing: {exc}"
-            LOGGER.warning(warning)
+            if self.config.debug:
+                LOGGER.exception(warning)
+            else:
+                LOGGER.warning(warning)
             warnings.append(warning)
             return None, {"status": "failed", "error": str(exc)}
         finally:

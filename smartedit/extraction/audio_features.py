@@ -84,7 +84,10 @@ def extract_audio_features(
         judgment = _coerce_judgment(judgment_value)
     except Exception as exc:
         warning = f"{adapter_name} analysis failed: {exc}"
-        LOGGER.warning(warning)
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            LOGGER.exception(warning)
+        else:
+            LOGGER.warning(warning)
         warnings.append(warning)
         if use_librosa_fallback:
             return build_librosa_fallback_analysis(
