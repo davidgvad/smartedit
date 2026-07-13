@@ -69,6 +69,7 @@ def build_sampling_plan(
     duration_seconds: float,
     fps: float,
     max_frames: int,
+    frame_count: int | None = None,
     cut_timestamps: Iterable[float] = (),
     boundary_offset_seconds: float = 0.15,
 ) -> list[tuple[int, SamplingReason]]:
@@ -86,11 +87,19 @@ def build_sampling_plan(
         raise ValueError("fps must be a finite positive number")
     if max_frames <= 0:
         raise ValueError("max_frames must be a positive integer")
+    if frame_count is not None and (
+        type(frame_count) is not int or frame_count <= 0
+    ):
+        raise ValueError("frame_count must be a positive integer when provided")
     if boundary_offset_seconds < 0.0:
         raise ValueError("boundary_offset_seconds cannot be negative")
 
     cuts = _validate_cut_timestamps(cut_timestamps, duration_seconds)
-    frame_count = max(1, int(math.ceil(duration_seconds * fps)))
+    # Container duration and average FPS are commonly rounded. Multiplying
+    # them can therefore be slightly larger than the real number of frames
+    # (for example, 16.350 * 29.970 ~= 490.01 for a 490-frame video). Prefer
+    # the decoder's count and use rounding, not ceiling, as the fallback.
+    frame_count = frame_count or max(1, int(round(duration_seconds * fps)))
     budget = min(max_frames, frame_count)
 
     if cuts and budget >= 2:
@@ -201,13 +210,6 @@ def sample_frames(
         destination_dir = Path(output_dir).expanduser().resolve()
     destination_dir.mkdir(parents=True, exist_ok=True)
 
-    plan = build_sampling_plan(
-        duration_seconds=video_metadata.duration_seconds,
-        fps=video_metadata.fps,
-        max_frames=max_frames,
-        cut_timestamps=cut_timestamps,
-        boundary_offset_seconds=boundary_offset_seconds,
-    )
     cv2 = _load_opencv()
     capture = cv2.VideoCapture(str(source))  # type: ignore[attr-defined]
     if not capture.isOpened():
@@ -220,6 +222,22 @@ def sample_frames(
     sampled: list[SampledFrame] = []
     previous_timestamp = -1.0
     try:
+        reported_frame_count = float(  # type: ignore[attr-defined]
+            capture.get(cv2.CAP_PROP_FRAME_COUNT)  # type: ignore[attr-defined]
+        )
+        decoder_frame_count = (
+            int(round(reported_frame_count))
+            if math.isfinite(reported_frame_count) and reported_frame_count >= 1.0
+            else None
+        )
+        plan = build_sampling_plan(
+            duration_seconds=video_metadata.duration_seconds,
+            fps=video_metadata.fps,
+            max_frames=max_frames,
+            frame_count=decoder_frame_count,
+            cut_timestamps=cut_timestamps,
+            boundary_offset_seconds=boundary_offset_seconds,
+        )
         LOGGER.info("Sampling %d model frames from %s", len(plan), source.name)
         for frame_index, reason in plan:
             estimated_timestamp = min(
