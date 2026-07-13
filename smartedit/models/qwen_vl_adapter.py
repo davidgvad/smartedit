@@ -153,6 +153,10 @@ class QwenVLAdapter:
         LOGGER.info("Running Qwen3-VL on %d sampled frames", len(frame_manifest))
         try:
             inputs = self._prepare_inputs(messages)
+            # Qwen3-VL's processor can return token_type_ids, but the model's
+            # generation interface does not accept them. This matches the
+            # official Transformers Qwen3-VL inference example.
+            inputs = {key: value for key, value in inputs.items() if key != "token_type_ids"}
             inputs = _move_batch(inputs, self.device)
             with self._torch.inference_mode():
                 output_ids = self._model.generate(
@@ -168,7 +172,9 @@ class QwenVLAdapter:
                 clean_up_tokenization_spaces=False,
             )[0]
         except Exception as exc:
-            raise QwenAdapterError("Qwen3-VL inference failed.") from exc
+            raise QwenAdapterError(
+                f"Qwen3-VL inference failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
         parsed = parse_json_object(text)
         validate_qwen_output(parsed, duration_seconds)
