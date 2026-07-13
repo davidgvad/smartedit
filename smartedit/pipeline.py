@@ -319,7 +319,10 @@ class SmartEditPipeline:
             return parsed, raw
         except Exception as exc:
             warning = f"Qwen3-VL unavailable; visual-semantic signals are neutral/unknown: {exc}"
-            LOGGER.warning(warning)
+            if self.config.debug:
+                LOGGER.exception(warning)
+            else:
+                LOGGER.warning(warning)
             warnings.append(warning)
             raw = dict(adapter.last_raw_output)
             raw.update({"status": "failed", "error": str(exc)})
