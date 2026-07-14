@@ -15,6 +15,12 @@ from typing import Any, TypeGuard
 from .confidence import cap_fallback, clamp_confidence, penalize_conflict
 
 VALID_SCORES = {-1, 0, 1}
+MIN_MASKING_SPEECH_SECONDS = 2.0
+MIN_MASKING_WINDOWS = 4
+HARMFUL_VOICE_MARGIN_DB = -3.0
+HARMFUL_ACCOMPANIMENT_DOMINANCE = 0.5
+SAFE_VOICE_MARGIN_DB = 6.0
+SAFE_ACCOMPANIMENT_DOMINANCE = 0.1
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,19 @@ class RubricResult:
             "sources": _deduplicate(self.sources),
             "conflicts": self.conflicts,
         }
+
+
+@dataclass(frozen=True)
+class MaskingAssessment:
+    """Conservative interpretation of Demucs levels during Whisper speech."""
+
+    harmful: bool
+    clearly_safe: bool
+    confidence: float
+    median_margin_db: float
+    accompaniment_dominant_ratio: float
+    analyzed_speech_seconds: float
+    evidence: list[dict[str, Any]]
 
 
 def neutral_unavailable(signal: str) -> RubricResult:
@@ -320,6 +339,34 @@ def score_narration(
 
     interference = str(audio_judgment.get("speech_music_interference", "unknown")).lower()
     quality = str(audio_judgment.get("audio_quality", "unknown")).lower()
+    masking = _masking_assessment(audio, duration)
+    if masking is not None and masking.harmful:
+        sources.extend(["demucs", "whisper"])
+        conflicts: list[str] = []
+        confidence = masking.confidence
+        if semantic_audio_available:
+            sources.append("audio_flamingo_3")
+        if semantic_audio_available and interference in {"none", "low"}:
+            conflicts.append(
+                "Audio Flamingo reported low or no speech/music interference, while "
+                "Demucs stem levels found sustained accompaniment dominance during "
+                "Whisper speech intervals."
+            )
+            confidence = penalize_conflict(confidence, 1)
+        elif semantic_audio_available and interference == "high":
+            confidence = max(confidence, 0.72)
+        return RubricResult(
+            -1,
+            confidence,
+            "Narration needs improvement because separated accompaniment is louder "
+            f"than the vocal by a median of {abs(masking.median_margin_db):.1f} dB, "
+            f"and dominates {masking.accompaniment_dominant_ratio:.0%} of measured "
+            "speech windows. This is a level-based masking proxy, not a direct "
+            "intelligibility test.",
+            evidence + masking.evidence,
+            sources,
+            conflicts,
+        )
     if wpm > 220 or interference == "high" or quality == "poor":
         reasons = []
         if wpm > 220:
@@ -330,12 +377,23 @@ def score_narration(
             reasons.append("audio quality causes comprehension risk")
         if semantic_audio_available:
             sources.append("audio_flamingo_3")
+        conflicts: list[str] = []
+        confidence = 0.72
+        if interference == "high" and masking is not None and masking.clearly_safe:
+            conflicts.append(
+                "Audio Flamingo reported high speech/music interference, while Demucs "
+                "full-band stem levels showed a comfortable vocal margin. Level balance "
+                "cannot rule out frequency-specific masking."
+            )
+            confidence = penalize_conflict(confidence, 1)
+            sources.extend(["demucs", "whisper"])
         return RubricResult(
             -1,
-            0.72,
+            confidence,
             "Narration needs improvement because " + "; ".join(reasons) + ".",
-            evidence,
+            evidence + (masking.evidence if masking is not None else []),
             sources,
+            conflicts,
         )
 
     semantic_support = story_score == 1 or pace_score == 1
@@ -398,6 +456,30 @@ def score_background_music(
     interference = str(judgment.get("speech_music_interference", "none")).lower()
     explicit_score = judgment.get("background_music_score")
     score = int(explicit_score) if _is_valid_score(explicit_score) else 0
+    masking = _masking_assessment(audio, duration)
+    if presence and masking is not None and masking.harmful:
+        conflicts: list[str] = []
+        confidence = masking.confidence
+        if interference in {"none", "low"}:
+            conflicts.append(
+                "Audio Flamingo reported low or no speech/music interference, while "
+                "Demucs stem levels found sustained accompaniment dominance during "
+                "Whisper speech intervals."
+            )
+            confidence = penalize_conflict(confidence, 1)
+        elif interference == "high":
+            confidence = max(confidence, 0.72)
+        return RubricResult(
+            -1,
+            confidence,
+            "Background music is present and its separated accompaniment level "
+            f"dominates {masking.accompaniment_dominant_ratio:.0%} of measured speech "
+            f"windows (median vocal margin {masking.median_margin_db:.1f} dB), creating "
+            "a sustained masking risk.",
+            _safe_evidence(judgment.get("evidence", []), duration) + masking.evidence,
+            ["audio_flamingo_3", "demucs", "whisper"],
+            conflicts,
+        )
     if fallback and presence_value is None:
         score = 0
         explanation = (
@@ -436,12 +518,31 @@ def score_background_music(
         explanation += (
             " This is a librosa-feature fallback judgment, not Audio Flamingo equivalence."
         )
+    conflicts: list[str] = []
+    evidence = _safe_evidence(judgment.get("evidence", []), duration)
+    sources = ["librosa_fallback" if fallback else "audio_flamingo_3"]
+    if (
+        not fallback
+        and presence
+        and interference == "high"
+        and masking is not None
+        and masking.clearly_safe
+    ):
+        conflicts.append(
+            "Audio Flamingo reported high speech/music interference, while Demucs "
+            "full-band stem levels showed a comfortable vocal margin. Level balance "
+            "cannot rule out frequency-specific masking."
+        )
+        confidence = penalize_conflict(confidence, 1)
+        evidence += masking.evidence
+        sources.extend(["demucs", "whisper"])
     return RubricResult(
         score,
         confidence,
         explanation,
-        _safe_evidence(judgment.get("evidence", []), duration),
-        ["librosa_fallback" if fallback else "audio_flamingo_3"],
+        evidence,
+        sources,
+        conflicts,
     )
 
 
@@ -555,6 +656,67 @@ def _audio_judgment(audio: Mapping[str, Any] | None) -> Mapping[str, Any]:
         if isinstance(estimates, Mapping):
             return estimates
     return {}
+
+
+def _masking_assessment(
+    audio: Mapping[str, Any] | None,
+    duration: float,
+) -> MaskingAssessment | None:
+    """Read validated stem-balance measurements without treating them as truth."""
+
+    audio = _mapping(audio)
+    value = audio.get("speech_music_masking", audio.get("source_separation"))
+    masking = _mapping(value)
+    if str(masking.get("status", "")).lower() != "ok":
+        return None
+
+    analyzed_seconds = _number(masking.get("analyzed_speech_seconds"), -1.0)
+    window_count = int(_number(masking.get("speech_window_count"), -1.0))
+    margin = _number(
+        masking.get(
+            "voice_to_accompaniment_db_median",
+            masking.get("voice_to_music_ratio_db_median"),
+        ),
+        math.nan,
+    )
+    dominant_ratio = _number(
+        masking.get(
+            "accompaniment_dominant_speech_ratio",
+            masking.get("music_dominant_speech_ratio"),
+        ),
+        math.nan,
+    )
+    if (
+        analyzed_seconds < MIN_MASKING_SPEECH_SECONDS
+        or window_count < MIN_MASKING_WINDOWS
+        or not math.isfinite(margin)
+        or not math.isfinite(dominant_ratio)
+        or not 0.0 <= dominant_ratio <= 1.0
+    ):
+        return None
+
+    if analyzed_seconds >= 8.0:
+        confidence = 0.68
+    elif analyzed_seconds >= 4.0:
+        confidence = 0.62
+    else:
+        confidence = 0.55
+    harmful = (
+        margin <= HARMFUL_VOICE_MARGIN_DB and dominant_ratio >= HARMFUL_ACCOMPANIMENT_DOMINANCE
+    )
+    if harmful and margin <= -6.0 and dominant_ratio >= 0.75:
+        confidence = min(0.75, confidence + 0.05)
+    clearly_safe = margin >= SAFE_VOICE_MARGIN_DB and dominant_ratio <= SAFE_ACCOMPANIMENT_DOMINANCE
+    raw_evidence = masking.get("evidence", masking.get("masking_intervals", []))
+    return MaskingAssessment(
+        harmful=harmful,
+        clearly_safe=clearly_safe,
+        confidence=confidence,
+        median_margin_db=margin,
+        accompaniment_dominant_ratio=dominant_ratio,
+        analyzed_speech_seconds=analyzed_seconds,
+        evidence=_safe_evidence(raw_evidence, duration),
+    )
 
 
 def _is_audio_fallback(audio: Mapping[str, Any] | None) -> bool:

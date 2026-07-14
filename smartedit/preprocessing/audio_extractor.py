@@ -45,7 +45,7 @@ def extract_audio(
     ffmpeg_path: str | Path | None = None,
     timeout_seconds: float = 600.0,
 ) -> Path:
-    """Extract a PCM WAV suitable for Whisper and objective audio analysis.
+    """Extract a cached PCM WAV at the requested sample rate and channel layout.
 
     ``output_path`` may be supplied directly.  Otherwise a stable filename in
     the source-specific ``cache_dir`` is used.  The source is never modified.

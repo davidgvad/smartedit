@@ -81,6 +81,8 @@ class SmartEditConfig:
     qwen_model: str = "Qwen/Qwen3-VL-4B-Instruct"
     whisper_model: str = "openai/whisper-large-v3-turbo"
     audio_model: str = "nvidia/audio-flamingo-3-hf"
+    enable_demucs: bool = False
+    demucs_model: str = "HDEMUCS_HIGH_MUSDB_PLUS"
     transnet_checkpoint: Path | None = None
     cache_dir: Path = Path(".smartedit-cache")
     max_frames: int = 24
@@ -98,7 +100,7 @@ class SmartEditConfig:
         )
         if self.max_frames <= 0:
             raise ConfigurationError("max_frames must be positive")
-        if not self.qwen_model or not self.whisper_model or not self.audio_model:
+        if not (self.qwen_model and self.whisper_model and self.audio_model and self.demucs_model):
             raise ConfigurationError("model names cannot be empty")
 
     @property
@@ -115,6 +117,7 @@ class SmartEditConfig:
             "qwen_model": "SMARTEDIT_QWEN_MODEL",
             "whisper_model": "SMARTEDIT_WHISPER_MODEL",
             "audio_model": "SMARTEDIT_AUDIO_MODEL",
+            "demucs_model": "SMARTEDIT_DEMUCS_MODEL",
             "transnet_checkpoint": "SMARTEDIT_TRANSNET_CHECKPOINT",
             "cache_dir": "SMARTEDIT_CACHE_DIR",
         }
@@ -133,6 +136,7 @@ class SmartEditConfig:
         for field_name, env_name in {
             "debug": "SMARTEDIT_DEBUG",
             "allow_model_downloads": "SMARTEDIT_ALLOW_MODEL_DOWNLOADS",
+            "enable_demucs": "SMARTEDIT_ENABLE_DEMUCS",
         }.items():
             value = os.getenv(env_name)
             if value is not None:

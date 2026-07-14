@@ -9,15 +9,17 @@ from typing import Any, cast
 
 from smartedit.config import SmartEditConfig
 from smartedit.extraction.audio_features import extract_audio_features
+from smartedit.extraction.masking_features import measure_speech_music_masking
 from smartedit.extraction.narration_features import extract_narration_features
 from smartedit.extraction.transition_features import analyze_transitions
 from smartedit.extraction.visual_features import build_visual_context
 from smartedit.fusion.scorer import fuse_edit_signals
 from smartedit.models.audio_flamingo_adapter import AudioFlamingoAdapter
+from smartedit.models.demucs_adapter import DemucsAdapter
 from smartedit.models.qwen_vl_adapter import QwenVLAdapter
 from smartedit.models.transnet_adapter import DeviceName, TransNetV2Adapter
 from smartedit.models.whisper_adapter import WhisperAdapter
-from smartedit.preprocessing.audio_extractor import extract_audio_if_present
+from smartedit.preprocessing.audio_extractor import extract_audio, extract_audio_if_present
 from smartedit.preprocessing.ffmpeg_utils import (
     inspect_video,
 )
@@ -30,6 +32,7 @@ from smartedit.schemas import (
     NarrationAnalysis,
     ObjectiveMeasurements,
     RawModelOutputs,
+    SpeechMusicMaskingAnalysis,
     TransitionAnalysis,
     edit_signal_from_dict,
     to_dict,
@@ -53,7 +56,7 @@ class SmartEditPipeline:
         """Analyze one local short video, preserving every successful stage."""
 
         warnings: list[str] = []
-        LOGGER.info("[1/6] Inspecting video metadata")
+        LOGGER.info("[1/7] Inspecting video metadata")
         video = inspect_video(video_path)
         source = Path(video.path)
         device = self.config.resolved_device.value
@@ -75,7 +78,7 @@ class SmartEditPipeline:
             LOGGER.warning(warning)
             warnings.append(warning)
 
-        LOGGER.info("[2/6] Detecting shot boundaries")
+        LOGGER.info("[2/7] Detecting shot boundaries")
         transition, transnet_raw = self._transition_stage(source, video, device, warnings)
 
         try:
@@ -92,7 +95,7 @@ class SmartEditPipeline:
             warnings.append(warning)
             frames = []
 
-        LOGGER.info("[3/6] Transcribing narration")
+        LOGGER.info("[3/7] Transcribing narration")
         narration, whisper_raw = self._narration_stage(
             audio_path,
             video.duration_seconds,
@@ -103,7 +106,19 @@ class SmartEditPipeline:
         )
         _release_accelerator_memory()
 
-        LOGGER.info("[4/6] Analyzing audio")
+        LOGGER.info("[4/7] Measuring speech/music balance")
+        masking, masking_raw = self._masking_stage(
+            source=source,
+            video=video,
+            narration=narration,
+            artifact_root=artifact_root,
+            model_cache=model_cache,
+            device=device,
+            warnings=warnings,
+        )
+        _release_accelerator_memory()
+
+        LOGGER.info("[5/7] Analyzing audio")
         audio = self._audio_stage(
             audio_path,
             video.duration_seconds,
@@ -112,16 +127,18 @@ class SmartEditPipeline:
             device,
             warnings,
         )
+        audio.speech_music_masking = masking
         audio_raw = {
             "adapter_used": audio.adapter_used,
             "used_librosa_fallback": audio.used_librosa_fallback,
             "warnings": audio.warnings,
             "backend_output": audio.raw_output or {},
+            "speech_music_masking": masking_raw,
         }
         warnings.extend(audio.warnings)
         _release_accelerator_memory()
 
-        LOGGER.info("[5/6] Evaluating visual-semantic editing characteristics")
+        LOGGER.info("[6/7] Evaluating visual-semantic editing characteristics")
         qwen, qwen_raw = self._qwen_stage(
             frames=frames,
             duration_seconds=video.duration_seconds,
@@ -134,7 +151,7 @@ class SmartEditPipeline:
         )
         _release_accelerator_memory()
 
-        LOGGER.info("[6/6] Fusing objective evidence and model judgments")
+        LOGGER.info("[7/7] Fusing objective evidence and model judgments")
         transition_data = _model_dict(transition)
         # A zero-valued NarrationAnalysis for a genuinely silent video records an
         # objective zero, not a Whisper run. Keep it out of model provenance.
@@ -285,6 +302,81 @@ class SmartEditPipeline:
         finally:
             del adapter
 
+    def _masking_stage(
+        self,
+        *,
+        source: Path,
+        video: Any,
+        narration: NarrationAnalysis | None,
+        artifact_root: Path,
+        model_cache: Path,
+        device: str,
+        warnings: list[str],
+    ) -> tuple[SpeechMusicMaskingAnalysis | None, dict[str, Any]]:
+        """Optionally measure stem balance only during detected speech."""
+
+        if not self.config.enable_demucs:
+            return None, {
+                "status": "disabled",
+                "reason": "enable with --enable-demucs or SMARTEDIT_ENABLE_DEMUCS=1",
+            }
+        if not video.has_audio:
+            return None, {"status": "skipped", "reason": "video has no audio stream"}
+        if narration is None:
+            return None, {
+                "status": "skipped",
+                "reason": "Whisper timestamps are unavailable",
+            }
+        if narration.speech_duration < 2.0 or not (narration.words or narration.segments):
+            return None, {
+                "status": "skipped",
+                "reason": "fewer than two seconds of timestamped speech were detected",
+            }
+
+        adapter: DemucsAdapter | None = None
+        try:
+            stereo_audio = extract_audio(
+                source,
+                metadata=video,
+                cache_dir=artifact_root,
+                sample_rate=44_100,
+                channels=2,
+            )
+            adapter = DemucsAdapter(
+                model_name=self.config.demucs_model,
+                device=device,
+                cache_dir=model_cache / "torchaudio",
+                allow_download=self.config.allow_model_downloads,
+            )
+            stem_directory = stereo_audio.parent / "demucs"
+            stems = adapter.separate(stereo_audio, output_dir=stem_directory)
+            analysis = measure_speech_music_masking(
+                stems.vocals_path,
+                stems.accompaniment_path,
+                narration,
+                duration_seconds=video.duration_seconds,
+                model_name=stems.model_name,
+            )
+            return analysis, {
+                "status": analysis.status,
+                "source_separation": to_dict(stems),
+                "analysis": to_dict(analysis),
+            }
+        except Exception as exc:
+            warning = (
+                "Demucs speech/music masking analysis unavailable; other audio "
+                f"evidence was preserved: {exc}"
+            )
+            if self.config.debug:
+                LOGGER.exception(warning)
+            else:
+                LOGGER.warning(warning)
+            warnings.append(warning)
+            return None, {"status": "failed", "error": str(exc)}
+        finally:
+            if adapter is not None:
+                adapter.unload()
+
     def _qwen_stage(
         self,
         *,
@@ -333,6 +425,7 @@ class SmartEditPipeline:
         finally:
             del adapter
 
+
 def _objective_measurements(
     *,
     transition: TransitionAnalysis | None,
@@ -340,6 +433,7 @@ def _objective_measurements(
     audio: AudioAnalysis,
 ) -> ObjectiveMeasurements:
     objective = audio.objective
+    masking = audio.speech_music_masking
     return ObjectiveMeasurements(
         shot_count=transition.shot_count if transition else None,
         cut_count=transition.cut_count if transition else None,
@@ -360,6 +454,14 @@ def _objective_measurements(
         spectral_centroid_hz=objective.spectral_centroid_hz if objective else None,
         zero_crossing_rate=objective.zero_crossing_rate if objective else None,
         harmonic_percussive_ratio=(objective.harmonic_percussive_ratio if objective else None),
+        speech_music_analyzed_seconds=(masking.analyzed_speech_seconds if masking else None),
+        voice_to_accompaniment_db_median=(
+            masking.voice_to_accompaniment_db_median if masking else None
+        ),
+        voice_to_accompaniment_db_p10=(masking.voice_to_accompaniment_db_p10 if masking else None),
+        accompaniment_dominant_speech_ratio=(
+            masking.accompaniment_dominant_speech_ratio if masking else None
+        ),
     )
 
 
