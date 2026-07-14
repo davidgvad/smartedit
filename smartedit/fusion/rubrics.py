@@ -157,7 +157,7 @@ def score_pace(
         warnings.append(f"speaking rate is very fast ({wpm:.0f} WPM)")
     if coverage >= 0.25 and 0 < wpm < 65:
         warnings.append(f"speaking rate is unusually slow ({wpm:.0f} WPM)")
-    if shot_count >= 6 and cuts_per_minute > 50:
+    if shot_count >= 6 and cuts_per_minute > 20:
         warnings.append(f"cut rate is very high ({cuts_per_minute:.1f}/minute)")
     if duration >= 30 and shot_count <= 2 and average_shot > 15:
         warnings.append(f"visual holds are long (average {average_shot:.1f} seconds)")
@@ -183,7 +183,7 @@ def score_pace(
             )
         )
 
-    if semantic.confidence > 0:
+    if semantic.confidence > 0.5:
         if semantic.score == 1 and len(warnings) >= 2:
             conflict = (
                 "Contextual Qwen pace judgment conflicts with multiple objective pace warnings."
@@ -207,7 +207,7 @@ def score_pace(
                 sources,
                 [conflict],
             )
-        if semantic.score == 0 and len(warnings) >= 2:
+        if semantic.score == 0 and len(warnings) >= 1:
             return RubricResult(
                 -1,
                 0.58,
@@ -227,14 +227,14 @@ def score_pace(
     if len(warnings) >= 2:
         return RubricResult(
             -1,
-            0.5,
+            0.7,
             f"Multiple objective indicators suggest poorly balanced pace: {'; '.join(warnings)}.",
             evidence,
             sources,
         )
     return RubricResult(
         0,
-        0.3 if transition or narration else 0.0,
+        0.5 if transition or narration else 0.0,
         "Objective timing evidence alone does not establish whether the pace fits the content.",
         evidence,
         sources,
@@ -264,7 +264,7 @@ def score_narration(
         if clearly_needed:
             return RubricResult(
                 -1,
-                0.6,
+                0.7,
                 "The video has no audio track, and strong contextual evidence "
                 "indicates that spoken or written explanation is clearly needed.",
                 evidence,
@@ -320,12 +320,12 @@ def score_narration(
 
     interference = str(audio_judgment.get("speech_music_interference", "unknown")).lower()
     quality = str(audio_judgment.get("audio_quality", "unknown")).lower()
-    if wpm > 220 or interference == "high" or quality == "poor":
+    if wpm > 190 or interference == "high" or quality == "poor":
         reasons = []
-        if wpm > 220:
+        if wpm > 190:
             reasons.append(f"speaking rate is very fast ({wpm:.0f} WPM)")
-        if interference == "high":
-            reasons.append("music strongly masks speech")
+        if interference == "high" or interference == "medium":
+            reasons.append("music masks speech")
         if quality == "poor":
             reasons.append("audio quality causes comprehension risk")
         if semantic_audio_available:
@@ -338,8 +338,8 @@ def score_narration(
             sources,
         )
 
-    semantic_support = story_score == 1 or pace_score == 1
-    workable_rate = 85 <= wpm <= 200
+    semantic_support = story_score == 1 and pace_score == 1 
+    workable_rate = 85 <= wpm <= 180
     safe_audio = not semantic_audio_available or (
         interference in {"none", "low"} and quality != "poor"
     )
@@ -414,7 +414,7 @@ def score_background_music(
         else:
             score = 0
             explanation = (
-                "No background music was detected; the evidence does not establish "
+                "No background music was detected, the evidence does not establish "
                 "that music is needed."
             )
     elif interference == "high":
@@ -536,7 +536,7 @@ def score_transitions(
         0,
         0.45 if transition and effects.confidence > 0 else (0.3 if transition else 0.0),
         "Cut boundaries were measured, but no reliable evidence shows that "
-        "transition styling helps or harms; simple cuts may be sufficient.",
+        "transition styling helps or harms, simple cuts may be sufficient.",
         evidence,
         sources,
     )
