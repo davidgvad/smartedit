@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,7 +13,7 @@ from smartedit.models.audio_flamingo_adapter import (
     AudioModelError,
     _dtype_for_device,
     _move_inputs,
-    _parse_tagged_audio_record,
+    _parse_choice_answer,
     validate_audio_model_output,
 )
 from smartedit.models.whisper_adapter import WhisperAdapter
@@ -40,13 +39,18 @@ def _audio_payload(start: float, end: float) -> dict[str, Any]:
     }
 
 
-def _tagged_audio_payload() -> str:
-    return (
-        "MUSIC_PRESENT=YES | MUSIC_ENERGY=HIGH | RHYTHMIC_STRENGTH=0.82 | "
-        "CATCHINESS_CONFIDENCE=0.76 | SPEECH_MUSIC_INTERFERENCE=MEDIUM | "
-        "AUDIO_QUALITY=ACCEPTABLE | BACKGROUND_MUSIC_SCORE=-1 | "
-        "CATCHY_MUSIC_SCORE=1 | ENVIRONMENTAL_SOUND=quiet room tone"
-    )
+def _scalar_audio_responses() -> list[str]:
+    return [
+        "YES",
+        "HIGH",
+        "HIGH",
+        "HIGH",
+        "LOW",
+        "AUDIBLE",
+        "GOOD",
+        "SUPPORTIVE",
+        "SUPPORTIVE",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -193,6 +197,10 @@ def test_audio_flamingo_generation_output_tracks_exact_prompt_prefix() -> None:
     assert adapter._last_generation_diagnostics is not None
     assert adapter._last_generation_diagnostics["prompt_prefix_matches"] is True
     assert adapter._last_generation_diagnostics["continuation_token_count"] == 2
+    assert (
+        adapter._last_generation_diagnostics["requested_max_new_tokens"]
+        == adapter.max_new_tokens
+    )
     processor_inputs = adapter._last_generation_diagnostics["processor_inputs"]
     assert processor_inputs["input_features"]["shape"] == [1, 1, 2]
     assert processor_inputs["input_features"]["all_finite"] is True
@@ -223,7 +231,7 @@ def test_audio_flamingo_refuses_to_guess_continuation_on_prefix_mismatch() -> No
     assert adapter._last_generation_diagnostics["prompt_prefix_matches"] is False
 
 
-def test_audio_flamingo_retries_plain_text_once_and_preserves_responses(
+def test_audio_flamingo_scalar_questions_build_valid_judgment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     audio_path = tmp_path / "audio.wav"
@@ -232,12 +240,81 @@ def test_audio_flamingo_retries_plain_text_once_and_preserves_responses(
     adapter._model = object()
     adapter._processor = object()
     adapter._torch = object()
-    valid_json = json.dumps(_audio_payload(0.0, 5.0))
-    caption = "Speech overlaps with energetic background music."
-    responses = iter([caption, "The music is energetic.", valid_json])
+    caption = (
+        "Clear speech plays over an energetic beat with quiet street ambience; "
+        "the music supports the delivery without masking it."
+    )
+    responses = iter([caption, *_scalar_audio_responses()])
+    messages_seen: list[list[dict[str, Any]]] = []
+    limits: list[int | None] = []
+
+    def generate(
+        messages: list[dict[str, Any]], *, max_new_tokens: int | None = None
+    ) -> str:
+        messages_seen.append(messages)
+        limits.append(max_new_tokens)
+        return next(responses)
+
+    monkeypatch.setattr(adapter, "_generate_text", generate)
+
+    result = adapter._analyze(audio_path, duration_seconds=5.0)
+
+    assert result is not None
+    assert result.background_music_present is True
+    assert result.music_energy == "high"
+    assert result.rhythmic_strength == pytest.approx(0.8)
+    assert result.catchiness_confidence == pytest.approx(0.8)
+    assert result.speech_music_interference == "low"
+    assert result.environmental_sound == "audible; see the audio caption for context"
+    assert result.audio_quality == "good"
+    assert result.background_music_score == 1
+    assert result.catchy_music_score == 1
+    assert result.explanation == caption
+    assert result.evidence == []
+    assert len(messages_seen) == 10
+    assert limits == [256] + [24] * 9
+    assert adapter.last_raw_output["status"] == "ok"
+    assert adapter.last_raw_output["selected_format"] == "scalar_questions"
+    assert adapter.last_raw_output["scalar_retry_used"] is False
+    assert len(adapter.last_raw_output["scalar_questions"]) == 9
+    assert [item["attempt"] for item in adapter.last_raw_output["attempts"]] == list(
+        range(1, 10)
+    )
+    assert all(
+        item["format"] == "scalar_choice"
+        and item["choice_attempt"] == 1
+        and "parsed_choice" in item
+        for item in adapter.last_raw_output["attempts"]
+    )
+    assert all(
+        any(
+            content.get("type") == "audio"
+            for message in messages
+            for content in message.get("content", [])
+        )
+        for messages in messages_seen[1:]
+    )
+
+
+def test_audio_flamingo_repairs_one_ambiguous_scalar_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+    adapter = AudioFlamingoAdapter()
+    adapter._model = object()
+    adapter._processor = object()
+    adapter._torch = object()
+    caption = "Speech plays over background music."
+    responses = iter(
+        [caption, "YES or NO", "YES", *_scalar_audio_responses()[1:]]
+    )
     messages_seen: list[list[dict[str, Any]]] = []
 
-    def generate(messages: list[dict[str, Any]]) -> str:
+    def generate(
+        messages: list[dict[str, Any]], *, max_new_tokens: int | None = None
+    ) -> str:
+        assert max_new_tokens is not None
         messages_seen.append(messages)
         return next(responses)
 
@@ -247,24 +324,25 @@ def test_audio_flamingo_retries_plain_text_once_and_preserves_responses(
 
     assert result is not None
     assert result.background_music_present is True
-    assert len(messages_seen) == 3
-    assert adapter.last_raw_output["audio_caption"] == caption
-    assert adapter.last_raw_output["retry_used"] is True
-    assert adapter.last_raw_output["selected_attempt"] == 2
-    assert [item["raw_text"] for item in adapter.last_raw_output["attempts"]] == [
-        "The music is energetic.",
-        valid_json,
+    assert len(messages_seen) == 11
+    assert adapter.last_raw_output["scalar_retry_used"] is True
+    question = adapter.last_raw_output["scalar_questions"][
+        "background_music_present"
     ]
-    retry_text = messages_seen[2][-1]["content"][0]["text"]
-    assert "exactly one valid JSON object" in retry_text
-    assert any(
-        item.get("type") == "audio"
-        for message in messages_seen[2]
-        for item in message.get("content", [])
-    )
+    assert question["selected_choice"] == "YES"
+    assert len(question["attempts"]) == 2
+    assert "validation_error" in question["attempts"][0]
+    assert question["attempts"][1]["parsed_choice"] == "YES"
+    assert [item["format"] for item in adapter.last_raw_output["attempts"][:2]] == [
+        "scalar_choice",
+        "scalar_choice_repair",
+    ]
+    repair_prompt = messages_seen[2][-1]["content"][0]["text"]
+    assert "exactly one word" in repair_prompt
+    assert "YES, NO" in repair_prompt
 
 
-def test_audio_flamingo_token_limited_json_skips_repair_and_uses_tagged_format(
+def test_audio_flamingo_stops_after_invalid_scalar_repair(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     audio_path = tmp_path / "audio.wav"
@@ -273,121 +351,66 @@ def test_audio_flamingo_token_limited_json_skips_repair_and_uses_tagged_format(
     adapter._model = object()
     adapter._processor = object()
     adapter._torch = object()
-    responses = iter(
-        [
-            "A voice performs over a hip-hop beat.",
-            "A repeated non-JSON observation.",
-            _tagged_audio_payload(),
-        ]
-    )
+    responses = iter(["Speech and music are audible.", "maybe", "unclear"])
     calls = 0
 
-    def generate(_messages: list[dict[str, Any]]) -> str:
+    def generate(
+        _messages: list[dict[str, Any]], *, max_new_tokens: int | None = None
+    ) -> str:
         nonlocal calls
-        calls += 1
-        response = next(responses)
-        if calls == 2:
-            adapter._last_generation_diagnostics = {
-                "continuation_token_count": adapter.max_new_tokens
-            }
-        return response
-
-    monkeypatch.setattr(adapter, "_generate_text", generate)
-
-    result = adapter._analyze(audio_path, duration_seconds=5.0)
-
-    assert result is not None
-    assert calls == 3
-    assert adapter.last_raw_output["status"] == "ok"
-    assert adapter.last_raw_output["json_status"] == "truncated_at_token_limit"
-    assert adapter.last_raw_output["retry_used"] is False
-    assert adapter.last_raw_output["attempts"][0]["hit_max_new_tokens"] is True
-    assert [item["format"] for item in adapter.last_raw_output["attempts"]] == [
-        "json",
-        "tagged_record",
-    ]
-
-
-def test_audio_flamingo_json_repair_inference_failure_still_uses_tagged_format(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    audio_path = tmp_path / "audio.wav"
-    audio_path.touch()
-    adapter = AudioFlamingoAdapter()
-    adapter._model = object()
-    adapter._processor = object()
-    adapter._torch = object()
-    calls = 0
-
-    def generate(_messages: list[dict[str, Any]]) -> str:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return "A speaker performs over background music."
-        if calls == 2:
-            return "not JSON"
-        if calls == 3:
-            raise AudioModelError("simulated long-context generation failure")
-        return _tagged_audio_payload()
-
-    monkeypatch.setattr(adapter, "_generate_text", generate)
-
-    result = adapter._analyze(audio_path, duration_seconds=5.0)
-
-    assert result is not None
-    assert calls == 4
-    assert adapter.last_raw_output["status"] == "ok"
-    assert adapter.last_raw_output["json_status"] == "format_retry_inference_failed"
-    assert "long-context" in adapter.last_raw_output["json_inference_error"]
-    assert [item["format"] for item in adapter.last_raw_output["attempts"]] == [
-        "json",
-        "json_repair",
-        "tagged_record",
-    ]
-    assert "long-context" in adapter.last_raw_output["attempts"][1]["inference_error"]
-    assert adapter.last_raw_output["selected_format"] == "tagged_record_compatibility"
-
-
-def test_audio_flamingo_stops_after_one_json_and_one_tagged_repair(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    audio_path = tmp_path / "audio.wav"
-    audio_path.touch()
-    adapter = AudioFlamingoAdapter()
-    adapter._model = object()
-    adapter._processor = object()
-    adapter._torch = object()
-    responses = iter(
-        [
-            "Speech and quiet background music overlap.",
-            "first plain response",
-            "second plain response",
-            "invalid tagged response",
-            "invalid tagged repair",
-        ]
-    )
-    calls = 0
-
-    def generate(_messages: list[dict[str, Any]]) -> str:
-        nonlocal calls
+        assert max_new_tokens is not None
         calls += 1
         return next(responses)
 
     monkeypatch.setattr(adapter, "_generate_text", generate)
 
-    with pytest.raises(AudioModelError, match="after one tagged repair"):
+    with pytest.raises(AudioModelError, match="background_music_present"):
         adapter._analyze(audio_path, duration_seconds=5.0)
 
-    assert calls == 5
-    assert adapter.last_raw_output["status"] == "invalid_after_tagged_repair"
-    assert [item["raw_text"] for item in adapter.last_raw_output["attempts"]] == [
-        "first plain response",
-        "second plain response",
-        "invalid tagged response",
-        "invalid tagged repair",
-    ]
+    assert calls == 3
+    assert adapter.last_raw_output["status"] == "invalid_scalar_choice"
+    assert adapter.last_raw_output["failed_field"] == "background_music_present"
+    assert len(adapter.last_raw_output["attempts"]) == 2
     assert all(
         "validation_error" in item for item in adapter.last_raw_output["attempts"]
+    )
+
+
+def test_audio_flamingo_records_scalar_inference_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    audio_path = tmp_path / "audio.wav"
+    audio_path.touch()
+    adapter = AudioFlamingoAdapter()
+    adapter._model = object()
+    adapter._processor = object()
+    adapter._torch = object()
+    calls = 0
+
+    def generate(
+        _messages: list[dict[str, Any]], *, max_new_tokens: int | None = None
+    ) -> str:
+        nonlocal calls
+        assert max_new_tokens is not None
+        calls += 1
+        if calls == 1:
+            return "Speech and music are audible."
+        raise AudioModelError("simulated scalar inference failure")
+
+    monkeypatch.setattr(adapter, "_generate_text", generate)
+
+    with pytest.raises(AudioModelError, match="simulated scalar inference failure"):
+        adapter._analyze(audio_path, duration_seconds=5.0)
+
+    assert calls == 2
+    assert adapter.last_raw_output["status"] == "scalar_question_inference_failed"
+    assert adapter.last_raw_output["failed_field"] == "background_music_present"
+    attempts = adapter.last_raw_output["scalar_questions"][
+        "background_music_present"
+    ]["attempts"]
+    assert attempts[0]["inference_error"] == "simulated scalar inference failure"
+    assert adapter.last_raw_output["attempts"][0]["inference_error"] == (
+        "simulated scalar inference failure"
     )
 
 
@@ -400,7 +423,11 @@ def test_audio_flamingo_rejects_marker_as_natural_language_caption(
     adapter._model = object()
     adapter._processor = object()
     adapter._torch = object()
-    monkeypatch.setattr(adapter, "_generate_text", lambda _messages: "[END OF JSON]")
+    monkeypatch.setattr(
+        adapter,
+        "_generate_text",
+        lambda _messages, **_kwargs: "[END OF JSON]",
+    )
 
     with pytest.raises(AudioModelError, match="natural-language audio caption"):
         adapter._analyze(audio_path, duration_seconds=5.0)
@@ -410,135 +437,33 @@ def test_audio_flamingo_rejects_marker_as_natural_language_caption(
     assert adapter.last_raw_output["attempts"] == []
 
 
-def test_audio_flamingo_marker_uses_tagged_compatibility_format(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    audio_path = tmp_path / "audio.wav"
-    audio_path.touch()
-    adapter = AudioFlamingoAdapter()
-    adapter._model = object()
-    adapter._processor = object()
-    adapter._torch = object()
-    caption = "A speaker talks over rhythmic background music."
-    responses = iter([caption, "[END OF JSON]", _tagged_audio_payload()])
-    messages_seen: list[list[dict[str, Any]]] = []
-
-    def generate(messages: list[dict[str, Any]]) -> str:
-        messages_seen.append(messages)
-        return next(responses)
-
-    monkeypatch.setattr(adapter, "_generate_text", generate)
-
-    result = adapter._analyze(audio_path, duration_seconds=5.0)
-
-    assert result is not None
-    assert result.background_music_present is True
-    assert result.music_energy == "high"
-    assert result.speech_music_interference == "medium"
-    assert result.background_music_score == -1
-    assert result.catchy_music_score == 1
-    assert result.evidence == []
-    assert len(messages_seen) == 3
-    assert adapter.last_raw_output["audio_caption"] == caption
-    assert adapter.last_raw_output["retry_used"] is False
-    assert adapter.last_raw_output["tagged_fallback_used"] is True
-    assert adapter.last_raw_output["json_marker_detected"] is True
-    assert adapter.last_raw_output["selected_attempt"] == 2
-    assert adapter.last_raw_output["selected_format"] == "tagged_record_compatibility"
-    assert [item["format"] for item in adapter.last_raw_output["attempts"]] == [
-        "json",
-        "tagged_record",
-    ]
-    tagged_content = messages_seen[2][0]["content"]
-    assert any(item.get("type") == "audio" for item in tagged_content)
-    tagged_prompt = next(
-        item["text"]
-        for item in messages_seen[2][-1]["content"]
-        if item.get("type") == "text"
-    )
-    assert "MUSIC_PRESENT" in tagged_prompt
-    assert "ENVIRONMENTAL_SOUND" in tagged_prompt
-
-
-def test_audio_flamingo_repairs_real_malformed_tagged_response_once(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    audio_path = tmp_path / "audio.wav"
-    audio_path.touch()
-    adapter = AudioFlamingoAdapter()
-    adapter._model = object()
-    adapter._processor = object()
-    adapter._torch = object()
-    malformed = (
-        "MUSIC_PRESENT=NO | MUSIC_ENERGY=LOW | RHYTHMIC_STRENGTH=0.0 | "
-        "CASTEITY_CONFIDENCE=0.0 | SPEECH_MUSIC_INTERFERENCE=LOW | "
-        "AUDIO_QUALITY=GOOD | ENVIRONMENTAL_SOUND=none detected"
-    )
-    caption = "Speech and music are both audible."
-    responses = iter([caption, "[END OF JSON]", malformed, _tagged_audio_payload()])
-    messages_seen: list[list[dict[str, Any]]] = []
-
-    def generate(messages: list[dict[str, Any]]) -> str:
-        messages_seen.append(messages)
-        return next(responses)
-
-    monkeypatch.setattr(adapter, "_generate_text", generate)
-
-    result = adapter._analyze(audio_path, duration_seconds=5.0)
-
-    assert result is not None
-    assert result.background_music_present is True
-    assert adapter.last_raw_output["tagged_repair_used"] is True
-    assert adapter.last_raw_output["selected_attempt"] == 3
-    assert adapter.last_raw_output["selected_format"] == "tagged_record_repair"
-    assert [item["format"] for item in adapter.last_raw_output["attempts"]] == [
-        "json",
-        "tagged_record",
-        "tagged_record_repair",
-    ]
-    error = adapter.last_raw_output["attempts"][1]["validation_error"]
-    assert "unknown fields: CASTEITY_CONFIDENCE" in error
-    assert "missing fields: CATCHINESS_CONFIDENCE" in error
-    assert "BACKGROUND_MUSIC_SCORE" in error
-    assert "CATCHY_MUSIC_SCORE" in error
-    repair_prompt = messages_seen[3][-1]["content"][0]["text"]
-    assert "CASTEITY_CONFIDENCE" in repair_prompt
-    assert "CATCHINESS_CONFIDENCE" in repair_prompt
-    assert "BACKGROUND_MUSIC_SCORE" in repair_prompt
-    assert "CATCHY_MUSIC_SCORE" in repair_prompt
-    assert any(
-        item.get("type") == "audio"
-        for message in messages_seen[3]
-        for item in message.get("content", [])
-    )
-
-
-def test_parse_tagged_audio_record_is_strict_and_adds_no_evidence() -> None:
-    parsed = _parse_tagged_audio_record(_tagged_audio_payload())
-    validated = validate_audio_model_output(parsed, 5.0)
-
-    assert validated["background_music_present"] is True
-    assert validated["rhythmic_strength"] == pytest.approx(0.82)
-    assert validated["catchiness_confidence"] == pytest.approx(0.76)
-    assert validated["environmental_sound"] == "quiet room tone"
-    assert validated["evidence"] == []
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("HIGH", "HIGH"),
+        (" high. ", "HIGH"),
+        ("\nMEDIUM\n", "MEDIUM"),
+    ],
+)
+def test_parse_choice_answer_accepts_one_exact_token(text: str, expected: str) -> None:
+    assert _parse_choice_answer(text, ("LOW", "MEDIUM", "HIGH")) == expected
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        "MUSIC_PRESENT=YES",
-        _tagged_audio_payload() + " | UNKNOWN=value",
-        _tagged_audio_payload().replace(
-            "MUSIC_ENERGY=HIGH", "MUSIC_ENERGY=HIGH | MUSIC_ENERGY=LOW"
-        ),
-        _tagged_audio_payload().replace("RHYTHMIC_STRENGTH=0.82", "RHYTHMIC_STRENGTH=nan"),
-        _tagged_audio_payload().replace("CATCHY_MUSIC_SCORE=1", "CATCHY_MUSIC_SCORE=1.0"),
+        "",
+        "unknown",
+        "low or medium",
+        "not HIGH",
+        "The answer is medium.",
+        "I cannot say NO with confidence",
+        "Y|ES",
     ],
 )
-def test_parse_tagged_audio_record_rejects_ambiguous_values(text: str) -> None:
-    with pytest.raises(AudioModelError):
-        _parse_tagged_audio_record(text)
+def test_parse_choice_answer_rejects_ambiguous_or_extra_words(text: str) -> None:
+    with pytest.raises(AudioModelError, match="exactly one of"):
+        _parse_choice_answer(text, ("LOW", "MEDIUM", "HIGH", "YES", "NO"))
 
 
 def test_audio_fallback_preserves_failed_contextual_model_output(

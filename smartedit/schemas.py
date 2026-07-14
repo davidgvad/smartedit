@@ -346,7 +346,7 @@ def observation_from_dict(value: Mapping[str, Any]) -> TimestampedObservation:
 
 
 def audio_judgment_from_dict(value: Mapping[str, Any]) -> AudioModelJudgment:
-    """Convert Audio Flamingo's validated JSON dictionary."""
+    """Convert Audio Flamingo's validated field dictionary."""
 
     return AudioModelJudgment(
         background_music_present=value.get("background_music_present"),

@@ -200,30 +200,31 @@ of at least two seconds.
 
 ### 4. Audio analysis and the librosa fallback
 
-Audio Flamingo receives only audio plus the constrained prompt in
+Audio Flamingo receives only audio plus the caption prompt in
 `smartedit/prompts/audio_analysis.txt`. It cannot infer visual compatibility from
 frames it was not given; compatibility is considered later alongside Qwen
 context.
 
 Audio Flamingo is a free-text generator and does not guarantee schema-constrained
-decoding. The adapter first saves a natural-language caption of the speech,
-music, environmental sound, and mixing it heard. That caption grounds the
-structured request and distinguishes audio-perception problems from formatting
-problems. The adapter then requests and validates JSON. If that fails, it tries
-one formatting repair; the exact marker-only response
-<code>[END OF JSON]</code> skips that redundant repair. It then requests nine
-strictly parsed tagged fields. A JSON response that consumes the full generation
-budget, or a JSON-repair inference failure, also proceeds to this shorter format
-instead of aborting the audio model. A malformed tagged response receives one
-repair request containing the exact unknown, duplicate, or missing fields; the
-parser never fills them itself. A successful compatibility response is labeled
-<code>tagged_record_compatibility</code> or <code>tagged_record_repair</code> in
-<code>raw_model_outputs</code> and uses an empty evidence list because the tagged
-format makes no timestamp claims. If the repair also fails, the pipeline
-activates the explicitly non-equivalent librosa fallback. Raw attempts and
-token-prefix decoding diagnostics are retained. Diagnostics include processor
-tensor shapes, dtypes, finite/nonzero checks, and mask sums, but never tensor
-values.
+decoding. The adapter first requests and retains one concise natural-language
+audio caption. It then asks nine independent single-choice questions for music
+presence, energy, rhythmic strength, catchiness, speech/music interference,
+environmental-sound presence, audio quality, background-music effect, and
+catchy-music effect. Each answer must contain one unambiguous allowed choice; an
+invalid answer receives one shorter repair request. The deterministic adapter
+maps `LOW`/`MEDIUM`/`HIGH` to `0.2`/`0.5`/`0.8` and
+`HARMFUL`/`NEUTRAL`/`SUPPORTIVE` to `-1`/`0`/`1`. It does not fuzzy-correct
+misspellings or invent missing values.
+
+A successful response is labeled `scalar_questions` in `raw_model_outputs` and
+uses an empty evidence list because the choices make no timestamp claims. If
+captioning, inference, or a choice still fails after its one retry, the pipeline
+activates the explicitly non-equivalent librosa fallback. The caption, every
+question and raw response, validation errors, and safe token/tensor diagnostics
+are retained. Diagnostics include processor tensor shapes, dtypes,
+finite/nonzero checks, and mask sums, but never tensor values. This costs several
+short generation passes, but it is more reliable for the Hugging Face checkpoint
+than asking it to imitate one multi-field JSON schema.
 
 Librosa features are calculated independently even when Audio Flamingo works:
 
