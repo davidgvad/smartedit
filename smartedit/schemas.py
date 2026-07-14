@@ -230,106 +230,9 @@ class AudioModelJudgment:
 
 
 @dataclass
-class SpeechMusicMaskingAnalysis:
-    """Objective stem loudness measurements inside Whisper speech intervals.
-
-    The values compare stems produced by a source-separation model. They are a
-    useful masking proxy, but are not a direct intelligibility measurement.
-    """
-
-    status: str
-    duration_seconds: float
-    sample_rate_hz: int
-    model_name: str = "demucs"
-    window_seconds: float = 0.5
-    hop_seconds: float = 0.25
-    speech_window_count: int = 0
-    discarded_quiet_window_count: int = 0
-    analyzed_speech_seconds: float = 0.0
-    vocal_rms_dbfs: float | None = None
-    accompaniment_rms_dbfs: float | None = None
-    voice_to_accompaniment_db_overall: float | None = None
-    voice_to_accompaniment_db_median: float | None = None
-    voice_to_accompaniment_db_p10: float | None = None
-    accompaniment_dominant_speech_ratio: float | None = None
-    severe_accompaniment_dominant_speech_ratio: float | None = None
-    confidence: float = 0.0
-    speech_timestamps_used: list[TimestampedRange] = field(default_factory=list)
-    evidence: list[TimestampedObservation] = field(default_factory=list)
-    limitations: list[str] = field(default_factory=list)
-    raw_output: dict[str, Any] | None = None
-
-    def __post_init__(self) -> None:
-        allowed_statuses = {
-            "ok",
-            "insufficient_speech",
-            "no_speech_intervals",
-            "no_valid_windows",
-        }
-        if self.status not in allowed_statuses:
-            raise ValueError(f"unsupported speech/music masking status: {self.status}")
-        if not math.isfinite(self.duration_seconds) or self.duration_seconds < 0.0:
-            raise ValueError("duration_seconds must be a finite non-negative number")
-        if type(self.sample_rate_hz) is not int or self.sample_rate_hz <= 0:
-            raise ValueError("sample_rate_hz must be a positive integer")
-        if not math.isfinite(self.window_seconds) or self.window_seconds <= 0.0:
-            raise ValueError("window_seconds must be a finite positive number")
-        if not math.isfinite(self.hop_seconds) or self.hop_seconds <= 0.0:
-            raise ValueError("hop_seconds must be a finite positive number")
-        if type(self.speech_window_count) is not int or self.speech_window_count < 0:
-            raise ValueError("speech_window_count must be a non-negative integer")
-        if (
-            type(self.discarded_quiet_window_count) is not int
-            or self.discarded_quiet_window_count < 0
-        ):
-            raise ValueError("discarded_quiet_window_count must be a non-negative integer")
-        if (
-            not math.isfinite(self.analyzed_speech_seconds)
-            or self.analyzed_speech_seconds < 0.0
-            or self.analyzed_speech_seconds > self.duration_seconds + 1e-6
-        ):
-            raise ValueError("analyzed_speech_seconds must fall within the media duration")
-        for name in (
-            "vocal_rms_dbfs",
-            "accompaniment_rms_dbfs",
-            "voice_to_accompaniment_db_overall",
-            "voice_to_accompaniment_db_median",
-            "voice_to_accompaniment_db_p10",
-        ):
-            value = getattr(self, name)
-            if value is not None and not math.isfinite(value):
-                raise ValueError(f"{name} must be finite when present")
-        for name in (
-            "accompaniment_dominant_speech_ratio",
-            "severe_accompaniment_dominant_speech_ratio",
-            "confidence",
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                _check_probability(value, name)
-        if self.status in {"ok", "insufficient_speech"}:
-            required = (
-                self.voice_to_accompaniment_db_median,
-                self.voice_to_accompaniment_db_p10,
-                self.accompaniment_dominant_speech_ratio,
-                self.severe_accompaniment_dominant_speech_ratio,
-            )
-            if self.speech_window_count == 0 or any(value is None for value in required):
-                raise ValueError("completed masking analysis requires window measurements")
-        self.validate_timestamps(self.duration_seconds)
-
-    def validate_timestamps(self, duration_seconds: float) -> None:
-        if not math.isfinite(duration_seconds) or duration_seconds < 0.0:
-            raise ValueError("duration_seconds must be a finite non-negative number")
-        for item in [*self.speech_timestamps_used, *self.evidence]:
-            item.validate_timestamps(duration_seconds)
-
-
-@dataclass
 class AudioAnalysis:
     objective: LibrosaFeatures | None = None
     judgment: AudioModelJudgment | None = None
-    speech_music_masking: SpeechMusicMaskingAnalysis | None = None
     adapter_used: str | None = None
     used_librosa_fallback: bool = False
     warnings: list[str] = field(default_factory=list)
@@ -399,10 +302,6 @@ class ObjectiveMeasurements:
     spectral_centroid_hz: float | None = None
     zero_crossing_rate: float | None = None
     harmonic_percussive_ratio: float | None = None
-    speech_music_analyzed_seconds: float | None = None
-    voice_to_accompaniment_db_median: float | None = None
-    voice_to_accompaniment_db_p10: float | None = None
-    accompaniment_dominant_speech_ratio: float | None = None
 
 
 @dataclass

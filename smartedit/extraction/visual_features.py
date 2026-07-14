@@ -96,9 +96,6 @@ def _audio_summary(audio: Mapping[str, Any]) -> dict[str, Any]:
         possible_estimates = raw_output.get("fallback_estimates", {})
         if isinstance(possible_estimates, Mapping):
             fallback_estimates = possible_estimates
-    masking = audio.get("speech_music_masking", {})
-    if not isinstance(masking, Mapping):
-        masking = {}
     return {
         "adapter": audio.get("adapter", audio.get("adapter_used", audio.get("backend"))),
         "fallback_used": fallback_used,
@@ -125,22 +122,6 @@ def _audio_summary(audio: Mapping[str, Any]) -> dict[str, Any]:
                 "explanation",
             )
             if judgment.get(key) is not None
-        },
-        "speech_music_masking_proxy": {
-            key: masking.get(key)
-            for key in (
-                "status",
-                "model_name",
-                "analyzed_speech_seconds",
-                "speech_window_count",
-                "voice_to_accompaniment_db_median",
-                "voice_to_accompaniment_db_p10",
-                "accompaniment_dominant_speech_ratio",
-                "severe_accompaniment_dominant_speech_ratio",
-                "confidence",
-                "limitations",
-            )
-            if masking.get(key) is not None
         },
         "fallback_estimates_not_model_equivalent": {
             key: fallback_estimates.get(key)

@@ -29,17 +29,6 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--audio-model", default=None, help="Audio Flamingo model id or local path"
     )
-    analyze.add_argument(
-        "--enable-demucs",
-        action="store_true",
-        default=None,
-        help="measure speech/music balance with optional Demucs source separation",
-    )
-    analyze.add_argument(
-        "--demucs-model",
-        default=None,
-        help="TorchAudio Demucs bundle name (default: HDEMUCS_HIGH_MUSDB_PLUS)",
-    )
     analyze.add_argument("--cache-dir", type=Path, default=None)
     analyze.add_argument("--max-frames", type=int, default=None)
     analyze.add_argument("--debug", action="store_true", default=None)
@@ -55,8 +44,6 @@ def _run_analyze(arguments: argparse.Namespace) -> int:
             "qwen_model": arguments.qwen_model,
             "whisper_model": arguments.whisper_model,
             "audio_model": arguments.audio_model,
-            "enable_demucs": arguments.enable_demucs,
-            "demucs_model": arguments.demucs_model,
             "cache_dir": arguments.cache_dir,
             "max_frames": arguments.max_frames,
             "debug": arguments.debug,
@@ -68,8 +55,7 @@ def _run_analyze(arguments: argparse.Namespace) -> int:
     if config.allow_model_downloads:
         LOGGER.warning(
             "Large model downloads are explicitly enabled. Qwen3-VL, Whisper "
-            "large-v3-turbo, Audio Flamingo 3, and enabled Demucs checkpoints may "
-            "require many gigabytes in total; "
+            "large-v3-turbo, and Audio Flamingo 3 may require many gigabytes in total; "
             "review their licenses and available memory before continuing."
         )
     LOGGER.info("Using device: %s", config.resolved_device.value)

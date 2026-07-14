@@ -33,11 +33,7 @@
     "onset_strength": 1.73,
     "spectral_centroid_hz": 1842.6,
     "zero_crossing_rate": 0.071,
-    "harmonic_percussive_ratio": 1.84,
-    "speech_music_analyzed_seconds": 22.1,
-    "voice_to_accompaniment_db_median": 8.4,
-    "voice_to_accompaniment_db_p10": 4.9,
-    "accompaniment_dominant_speech_ratio": 0.038
+    "harmonic_percussive_ratio": 1.84
   },
   "signals": {
     "length": {
@@ -203,59 +199,6 @@
       "adapter_used": "audio_flamingo_3",
       "used_librosa_fallback": false,
       "warnings": [],
-      "speech_music_masking": {
-        "status": "ok",
-        "source_separation": {
-          "vocals_path": "/cache/artifacts/coffee-pour-demo/demucs/HDEMUCS_HIGH_MUSDB_PLUS/vocals.wav",
-          "accompaniment_path": "/cache/artifacts/coffee-pour-demo/demucs/HDEMUCS_HIGH_MUSDB_PLUS/accompaniment.wav",
-          "sample_rate_hz": 44100,
-          "model_name": "HDEMUCS_HIGH_MUSDB_PLUS",
-          "cache_reused": false,
-          "raw_output": {
-            "status": "ok",
-            "adapter": "hybrid_demucs_torchaudio",
-            "model_family": "Hybrid Demucs",
-            "sources": ["drums", "bass", "other", "vocals"],
-            "vocal_source": "vocals",
-            "accompaniment_sources": ["drums", "bass", "other"],
-            "segment_seconds": 10.0,
-            "overlap_seconds": 1.0,
-            "common_gain_preserved": true,
-            "independent_stem_normalization": false,
-            "cache_reused": false
-          }
-        },
-        "analysis": {
-          "status": "ok",
-          "duration_seconds": 32.4,
-          "sample_rate_hz": 44100,
-          "model_name": "HDEMUCS_HIGH_MUSDB_PLUS",
-          "window_seconds": 0.5,
-          "hop_seconds": 0.25,
-          "speech_window_count": 79,
-          "discarded_quiet_window_count": 3,
-          "analyzed_speech_seconds": 22.1,
-          "vocal_rms_dbfs": -19.6,
-          "accompaniment_rms_dbfs": -28.1,
-          "voice_to_accompaniment_db_overall": 8.5,
-          "voice_to_accompaniment_db_median": 8.4,
-          "voice_to_accompaniment_db_p10": 4.9,
-          "accompaniment_dominant_speech_ratio": 0.038,
-          "severe_accompaniment_dominant_speech_ratio": 0.0,
-          "confidence": 0.68,
-          "speech_timestamps_used": [
-            {"start": 2.2, "end": 8.1},
-            {"start": 8.3, "end": 17.0},
-            {"start": 17.2, "end": 27.8}
-          ],
-          "evidence": [],
-          "limitations": [
-            "Separated stems are model estimates, not ground-truth source recordings.",
-            "Full-band RMS balance is a proxy and does not directly measure speech intelligibility or frequency-specific masking.",
-            "The stems must share one amplitude scale and must not be normalized independently."
-          ]
-        }
-      },
       "backend_output": {
         "model_name": "nvidia/audio-flamingo-3-hf",
         "parsed": {

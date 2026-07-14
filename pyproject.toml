@@ -17,15 +17,11 @@ dependencies = [
   "numpy>=1.26",
   "opencv-python-headless>=4.9",
   "Pillow>=10.2",
-  "soundfile>=0.12",
   "torch>=2.4",
   "transformers>=5.0,<6",
 ]
 
 [project.optional-dependencies]
-separation = [
-  "torchaudio>=2.4",
-]
 dev = [
   "pytest>=8.2",
   "ruff>=0.9",

@@ -200,129 +200,24 @@ def test_high_music_interference_is_harmful() -> None:
     assert result.score == -1
 
 
-def _masking_measurement(
-    *,
-    margin_db: float = -5.0,
-    dominant_ratio: float = 0.8,
-    analyzed_seconds: float = 10.0,
-) -> dict:
-    return {
-        "status": "ok",
-        "speech_window_count": 40,
-        "analyzed_speech_seconds": analyzed_seconds,
-        "voice_to_accompaniment_db_median": margin_db,
-        "accompaniment_dominant_speech_ratio": dominant_ratio,
-        "evidence": [
-            {
-                "start": 3.0,
-                "end": 4.0,
-                "observation": "Separated accompaniment is 5.0 dB louder than voice.",
-            }
-        ],
-    }
-
-
-def test_sustained_demucs_dominance_overrides_low_interference_judgment() -> None:
-    audio = {
-        "judgment": {
-            "background_music_present": True,
-            "background_music_score": 0,
-            "speech_music_interference": "low",
-            "audio_quality": "good",
-        },
-        "speech_music_masking": _masking_measurement(),
-    }
-    narration = score_narration(
-        20.0,
-        {"speech_coverage": 0.6, "speech_duration": 12.0, "words_per_minute": 150},
-        audio,
-        {},
-        {},
-        True,
-    )
-    music = score_background_music(20.0, audio, True)
-
-    assert narration.score == -1
-    assert music.score == -1
-    assert narration.conflicts and music.conflicts
-    assert {"demucs", "whisper"} <= set(narration.sources)
-    assert narration.evidence[-1]["start"] == 3.0
-
-
-def test_safe_demucs_balance_does_not_create_a_positive_signal() -> None:
-    audio = {
-        "judgment": {
-            "background_music_present": True,
-            "background_music_score": 0,
-            "speech_music_interference": "low",
-            "audio_quality": "good",
-        },
-        "speech_music_masking": _masking_measurement(
-            margin_db=8.0,
-            dominant_ratio=0.05,
-        ),
-    }
-
-    narration = score_narration(
-        20.0,
-        {"speech_coverage": 0.6, "speech_duration": 12.0, "words_per_minute": 150},
-        audio,
-        {},
-        {},
-        True,
-    )
-    music = score_background_music(20.0, audio, True)
-
-    assert narration.score == 0
-    assert music.score == 0
-
-
-def test_demucs_does_not_label_accompaniment_as_music_without_confirmation() -> None:
-    result = score_background_music(
-        20.0,
-        {"speech_music_masking": _masking_measurement()},
-        True,
-    )
-    assert result.score == 0
-    assert "demucs" not in result.sources
-
-
-def test_too_little_measured_speech_cannot_override_audio_model() -> None:
-    result = score_background_music(
-        20.0,
+def test_high_music_interference_is_harmful_to_narration() -> None:
+    result = score_narration(
+        15.0,
+        {"speech_coverage": 0.8, "speech_duration": 12.0, "words_per_minute": 150},
         {
             "judgment": {
                 "background_music_present": True,
-                "background_music_score": 0,
-                "speech_music_interference": "low",
-            },
-            "speech_music_masking": _masking_measurement(analyzed_seconds=1.5),
-        },
-        True,
-    )
-    assert result.score == 0
-    assert not result.conflicts
-
-
-def test_high_semantic_interference_survives_safe_level_conflict() -> None:
-    result = score_background_music(
-        20.0,
-        {
-            "judgment": {
-                "background_music_present": True,
-                "background_music_score": 0,
                 "speech_music_interference": "high",
-            },
-            "speech_music_masking": _masking_measurement(
-                margin_db=8.0,
-                dominant_ratio=0.05,
-            ),
+                "audio_quality": "acceptable",
+            }
         },
+        {},
+        {},
         True,
     )
+
     assert result.score == -1
-    assert result.conflicts
-    assert result.confidence < 0.72
+    assert "audio_flamingo_3" in result.sources
 
 
 def test_catchiness_absence_is_neutral_and_explicit_positive_survives() -> None:

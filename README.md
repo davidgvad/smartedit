@@ -44,7 +44,6 @@ unclear informational piece that lacks both useful text and speech.
 | Metadata and artifacts | ffprobe, ffmpeg, OpenCV | objective metadata, WAV, timestamped frames |
 | Shot boundaries | official TransNet-V2 PyTorch inference | cut frames/times, shot intervals and descriptive statistics |
 | Narration | Whisper large-v3-turbo through Transformers | transcript, language, segments, words, coverage, WPM, silent gaps |
-| Optional speech/music masking | TorchAudio Hybrid Demucs plus Whisper timestamps | separated-stem level margins inside detected speech windows |
 | Audio | Audio Flamingo 3 adapter plus independent librosa measurements | semantic judgment separated from objective features |
 | Visual semantics | Qwen3-VL with sampled frames and exact evidence context | strict editing-only JSON judgments and multi-label category |
 | Fusion | deterministic Python rubrics | final Edit Signals and explicit conflicts |
@@ -81,33 +80,6 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-Speech/music masking is optional because it adds another large neural model and
-requires `torchaudio`. PyTorch and TorchAudio must be the **same release** and
-must come from the same CPU/CUDA wheel family. A mismatched pair can fail at
-import time. The convenient local install is:
-
-```bash
-python -m pip install -e ".[separation]"
-python -c "import torch, torchaudio; print(torch.__version__, torchaudio.__version__)"
-```
-
-On a CUDA server, install the matching PyTorch/TorchAudio pair from the
-[official PyTorch selector](https://pytorch.org/get-started/locally/) first,
-then install SmartEdit. For the existing L40S environment with PyTorch
-`2.12.1+cu126`, preserve that PyTorch build and install its matching wheel:
-
-```bash
-conda activate smartedit-env
-python -m pip install --index-url https://download.pytorch.org/whl/cu126 \
-  --no-deps torchaudio==2.12.1
-python -c "import torch, torchaudio; print(torch.__version__, torchaudio.__version__, torch.cuda.is_available())"
-python -m pip install -e .
-```
-
-If the first two printed release numbers differ, fix the environment before
-enabling separation. `--no-deps` in the server command prevents pip from
-replacing the already working CUDA PyTorch installation.
-
 For tests:
 
 ```bash
@@ -117,11 +89,10 @@ python -m pytest
 
 ## Large-model download policy
 
-SmartEdit passes `local_files_only=True` to Hugging Face adapters by default;
-the optional Demucs adapter separately checks its TorchAudio checkpoint cache
-before loading. It does not silently fetch Qwen3-VL, Whisper large-v3-turbo,
-Audio Flamingo 3, or Demucs. Point the CLI at local model directories,
-pre-populate the relevant cache, or deliberately opt in:
+SmartEdit passes `local_files_only=True` to Hugging Face adapters by default.
+It does not silently fetch Qwen3-VL, Whisper large-v3-turbo, or Audio Flamingo
+3. Point the CLI at local model directories, pre-populate the relevant cache,
+or deliberately opt in:
 
 ```bash
 export SMARTEDIT_ALLOW_MODEL_DOWNLOADS=1
@@ -135,7 +106,6 @@ are:
 Qwen/Qwen3-VL-4B-Instruct
 openai/whisper-large-v3-turbo
 nvidia/audio-flamingo-3-hf
-HDEMUCS_HIGH_MUSDB_PLUS  # optional TorchAudio bundle
 ```
 
 ## TransNet-V2 setup
@@ -180,8 +150,6 @@ python -m smartedit.cli analyze clip.mov \
   --qwen-model Qwen/Qwen3-VL-4B-Instruct \
   --whisper-model openai/whisper-large-v3-turbo \
   --audio-model nvidia/audio-flamingo-3-hf \
-  --enable-demucs \
-  --demucs-model HDEMUCS_HIGH_MUSDB_PLUS \
   --cache-dir .smartedit-cache \
   --max-frames 24 \
   --debug
@@ -200,15 +168,11 @@ export SMARTEDIT_ALLOW_MODEL_DOWNLOADS=1
 
 python -m smartedit.cli analyze \
   /home/gvadzabd/videos/badvid.mp4 \
-  --output badvid_result_with_masking.json \
+  --output badvid_result.json \
   --device cuda \
   --max-frames 12 \
-  --enable-demucs \
   --debug
 ```
-
-Omit `--enable-demucs` for the original, faster pipeline. The default optional
-bundle is `HDEMUCS_HIGH_MUSDB_PLUS`.
 
 See [`.env.example`](.env.example) for optional environment settings and
 [`examples/sample_output.json`](examples/sample_output.json) for an illustrative
@@ -221,10 +185,8 @@ result. No sample video is bundled.
 The input must be a readable, non-empty `.mp4`, `.mov`, or `.webm` containing a
 decodable video stream. ffprobe supplies duration, average frame rate,
 orientation-aware resolution, codecs, and audio availability. ffmpeg extracts a
-mono 16 kHz PCM WAV for Whisper and librosa. When Demucs is enabled, ffmpeg also
-extracts a separate 44.1 kHz stereo WAV because source separation needs the
-full-band stereo mix; the 16 kHz mono Whisper artifact is not reused for that
-measurement. OpenCV samples deterministic, endpoint-inclusive frames.
+mono 16 kHz PCM WAV for Whisper and librosa. OpenCV samples deterministic,
+endpoint-inclusive frames.
 When TransNet cuts are available, part of the fixed frame budget is allocated to
 frames immediately around representative boundaries while uniform coverage is
 retained.
@@ -252,52 +214,7 @@ speech intervals are merged before calculating coverage. Speaking rate uses
 detected speech time, not total video duration. Silent gaps default to intervals
 of at least two seconds.
 
-### 4. Optional objective speech/music masking
-
-`--enable-demucs` adds a deliberately separate measurement path. The
-`HDEMUCS_HIGH_MUSDB_PLUS` TorchAudio Hybrid Demucs bundle estimates `vocals`,
-`drums`, `bass`, and `other`; SmartEdit sums the three non-vocal stems as
-`accompaniment`. It preserves their shared amplitude scale and never normalizes
-the vocal and accompaniment stems independently.
-
-SmartEdit then measures 500 ms RMS windows every 250 ms, using only windows that
-substantially overlap Whisper speech timestamps. Positive
-`voice_to_accompaniment_db_median` means the estimated vocal is louder; a
-negative value means the estimated accompaniment is louder. At least two
-seconds and four valid speech windows are required before fusion interprets the
-aggregate. The important output fields are:
-
-- `speech_music_analyzed_seconds`
-- `voice_to_accompaniment_db_median`
-- `voice_to_accompaniment_db_p10`
-- `accompaniment_dominant_speech_ratio`
-- timestamped intervals where the accompaniment strongly exceeded the vocal
-
-These values are objective arithmetic over **model-estimated** stems. They are
-useful evidence about level balance, but they are not a direct intelligibility
-score and are not ground-truth isolated recordings.
-`raw_model_outputs.audio_model.speech_music_masking` keeps the separation
-metadata and the complete masking analysis; the concise aggregate values are
-also copied into `objective_measurements`.
-
-The conservative fusion rules are explicit:
-
-- harmful masking requires a median vocal margin of at most `-3 dB` **and**
-  accompaniment dominance in at least `50%` of measured speech windows;
-- clearly safe balance requires a median margin of at least `+6 dB` and
-  accompaniment dominance in at most `10%` of windows;
-- a safe balance never creates a positive Edit Signal by itself;
-- Demucs can make `background_music` harmful only when Audio Flamingo
-  independently says music is present, because `accompaniment` may include
-  environmental sound rather than music;
-- when Audio Flamingo and the stem measurement disagree, SmartEdit retains both
-  findings, records a conflict, and lowers confidence.
-
-Separation is optional and fails gracefully. If TorchAudio, its checkpoint, or
-the separation run is unavailable, Audio Flamingo and librosa still run and the
-report contains a warning instead of a fabricated masking judgment.
-
-### 5. Audio analysis and the librosa fallback
+### 4. Audio analysis and the librosa fallback
 
 Audio Flamingo receives only audio plus the caption prompt in
 `smartedit/prompts/audio_analysis.txt`. It cannot infer visual compatibility from
@@ -341,7 +258,7 @@ and are confidence-capped. Librosa cannot reliably distinguish background from
 foreground music, decide catchiness, understand environmental sounds, judge
 music/visual fit, or measure semantic speech masking.
 
-### 6. Qwen3-VL context
+### 5. Qwen3-VL context
 
 Qwen receives ordered sampled frames, an adjacent exact timestamp for every
 frame, transcript segments, shot statistics, speech coverage/WPM, and an audio
@@ -353,7 +270,7 @@ The adapter validates every score, confidence, category value, and evidence
 timestamp before the output reaches fusion. Malformed output becomes a warning;
 it is never repaired into invented evidence.
 
-### 7. Fusion
+### 6. Fusion
 
 `smartedit/fusion/rubrics.py` contains readable thresholds and decisions. Qwen
 provides contextual visual judgments; objective evidence can support them, flag
@@ -368,8 +285,6 @@ clear risks, or create a conflict. Examples:
 - Transition style remains neutral when TransNet measured boundaries but Qwen did
   not explicitly observe helpful or harmful transition styling.
 - Text and text visibility are fused as separate signals.
-- Full-band Demucs levels can flag sustained accompaniment dominance but cannot
-  prove that frequency-specific masking or speech intelligibility is good.
 
 The thresholds are intentionally centralized and unit tested so they can later
 be calibrated against VidES or human annotations.
@@ -377,12 +292,10 @@ be calibrated against VidES or human annotations.
 ## Caching and partial failure
 
 Extracted audio and sampled frames are stored under the configured cache root in
-source-fingerprinted directories. When separation is enabled, the 44.1 kHz
-stereo mix and Demucs `vocals`/`accompaniment` WAV files are cached there too, so
-an unchanged source and bundle can reuse the expensive artifacts. Hugging Face
-and TorchAudio checkpoints use the model cache. Other model-analysis results are
-deliberately recomputed on each run; this keeps the baseline easy to follow and
-avoids a generic object cache/deserialization layer.
+source-fingerprinted directories. Hugging Face checkpoints use the model cache.
+Other model-analysis results are deliberately recomputed on each run; this keeps
+the baseline easy to follow and avoids a generic object cache/deserialization
+layer.
 
 Heavy models are run sequentially and accelerator caches are released between
 stages. If one stage fails:
@@ -442,11 +355,6 @@ code have their own terms:
 - [Audio Flamingo 3](https://huggingface.co/nvidia/audio-flamingo-3-hf) has
   model-specific NVIDIA/non-commercial and incorporated-model terms. Review them
   before downloading or using outputs commercially.
-- The optional
-  [`HDEMUCS_HIGH_MUSDB_PLUS` TorchAudio bundle](https://docs.pytorch.org/audio/stable/tutorials/hybrid_demucs_tutorial.html)
-  uses Hybrid Demucs and is documented as trained on MUSDB18-HQ plus extra
-  training data. TorchAudio code has its own upstream license; checkpoint and
-  training-data terms must also be reviewed for the intended use.
 
 Qwen3-VL 4B, Whisper large-v3-turbo, and Audio Flamingo 3 are substantial
 models. CUDA is the most practical full-stack target. Apple MPS is supported on
@@ -460,12 +368,6 @@ Mixed BF16/float32 execution can fail inside the current audio encoder, while an
 8B float32 model needs roughly 32 GB for weights alone. A high-memory GPU such as
 an L40S 48 GB or larger is therefore recommended for this adapter.
 
-Hybrid Demucs adds another GPU-heavy pass over 44.1 kHz stereo audio. SmartEdit
-runs heavy models sequentially and releases accelerator caches between them, but
-peak memory and runtime still depend on video length and the installed
-TorchAudio/PyTorch build. An L40S is a suitable target; CPU separation is
-supported but much slower.
-
 ## Limitations
 
 - Sampled frames can miss brief text, effects, or transitions between samples.
@@ -474,13 +376,6 @@ supported but much slower.
   should be checked carefully.
 - ASR timestamps and transcripts can be wrong for music, accents, overlapping
   speakers, or noisy recordings.
-- Demucs can leak vocals into accompaniment or instruments into the vocal stem.
-  Its full-band RMS margin cannot detect every frequency-specific masking or
-  intelligibility problem, and an accompaniment stem is not proof that the
-  sound is music.
-- The `-3 dB`/`50%` harmful gate, `+6 dB`/`10%` safe gate, two-second minimum,
-  window size, and confidence caps are conservative engineering defaults. They
-  have not been calibrated against VidES or listening-test labels.
 - Audio-language and vision-language models may still produce plausible but
   incorrect judgments; manual boundary checks prevent malformed evidence, not
   semantic error.
@@ -493,8 +388,6 @@ supported but much slower.
 - the exact prompts used by the authors;
 - the exact feature and scoring thresholds;
 - the exact calibration of `-1/0/1` labels;
-- how Demucs stem leakage and speech/music margins should be calibrated for the
-  authors' videos;
 - agreement with the authors' human annotations.
 
 Those uncertainties are why raw model outputs, objective measurements, model
