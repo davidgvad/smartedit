@@ -178,6 +178,47 @@ See [`.env.example`](.env.example) for optional environment settings and
 [`examples/sample_output.json`](examples/sample_output.json) for an illustrative
 result. No sample video is bundled.
 
+## Web UI
+
+Install the optional Streamlit dependency and launch the interface from the
+repository root:
+
+```bash
+python -m pip install -e '.[ui]'
+python -m streamlit run smartedit/ui.py
+```
+
+The page accepts either a video uploaded through the browser or an absolute
+video path that already exists on the machine running SmartEdit. It shows the
+video metadata before analysis, then presents signal scores, timestamped
+evidence, model status, warnings, and downloadable raw JSON. It deliberately
+does not calculate an overall score: `-1`, `0`, and `1` have contextual meanings
+for each individual Edit Signal and should not be averaged blindly.
+
+For a remote GPU server such as the L40S host, keep Streamlit bound to the
+server's loopback interface:
+
+```bash
+# On the server
+conda activate smartedit-env
+cd /home/gvadzabd/smartedit
+python -m streamlit run smartedit/ui.py \
+  --server.address 127.0.0.1 \
+  --server.port 8501
+```
+
+In a second terminal on your Mac, open an SSH tunnel and then visit
+`http://localhost:8501` in your browser:
+
+```bash
+ssh -L 8501:localhost:8501 gvadzabd@turing501
+```
+
+Enabling model downloads in the sidebar can transfer many gigabytes and is
+always shown with a warning. If an individual model fails, the UI still keeps
+completed stages, labels unavailable evidence, and displays the pipeline
+warning instead of fabricating a result.
+
 ## Pipeline details
 
 ### 1. Video preprocessing

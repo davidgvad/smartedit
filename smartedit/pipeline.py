@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -37,6 +38,8 @@ from smartedit.schemas import (
 
 LOGGER = logging.getLogger(__name__)
 
+ProgressCallback = Callable[[int, int, str], None]
+
 
 class SmartEditPipeline:
     """Run all independent evidence stages and conservative rule-based fusion."""
@@ -49,10 +52,21 @@ class SmartEditPipeline:
                 "sizes, licenses, and available memory before inference."
             )
 
-    def analyze(self, video_path: str | Path) -> AnalysisReport:
-        """Analyze one local short video, preserving every successful stage."""
+    def analyze(
+        self,
+        video_path: str | Path,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> AnalysisReport:
+        """Analyze one local short video, preserving every successful stage.
+
+        ``progress_callback`` is optional.  A UI can use it to receive the
+        current stage number, total stage count, and a short status message.
+        Command-line callers do not need to provide it.
+        """
 
         warnings: list[str] = []
+        _report_progress(progress_callback, 1, 6, "Inspecting video metadata")
         LOGGER.info("[1/6] Inspecting video metadata")
         video = inspect_video(video_path)
         source = Path(video.path)
@@ -75,6 +89,7 @@ class SmartEditPipeline:
             LOGGER.warning(warning)
             warnings.append(warning)
 
+        _report_progress(progress_callback, 2, 6, "Detecting cuts and sampling frames")
         LOGGER.info("[2/6] Detecting shot boundaries")
         transition, transnet_raw = self._transition_stage(source, video, device, warnings)
 
@@ -92,6 +107,7 @@ class SmartEditPipeline:
             warnings.append(warning)
             frames = []
 
+        _report_progress(progress_callback, 3, 6, "Transcribing narration")
         LOGGER.info("[3/6] Transcribing narration")
         narration, whisper_raw = self._narration_stage(
             audio_path,
@@ -103,6 +119,7 @@ class SmartEditPipeline:
         )
         _release_accelerator_memory()
 
+        _report_progress(progress_callback, 4, 6, "Analyzing audio")
         LOGGER.info("[4/6] Analyzing audio")
         audio = self._audio_stage(
             audio_path,
@@ -121,6 +138,12 @@ class SmartEditPipeline:
         warnings.extend(audio.warnings)
         _release_accelerator_memory()
 
+        _report_progress(
+            progress_callback,
+            5,
+            6,
+            "Evaluating visual-semantic editing characteristics",
+        )
         LOGGER.info("[5/6] Evaluating visual-semantic editing characteristics")
         qwen, qwen_raw = self._qwen_stage(
             frames=frames,
@@ -134,6 +157,7 @@ class SmartEditPipeline:
         )
         _release_accelerator_memory()
 
+        _report_progress(progress_callback, 6, 6, "Fusing Edit Signal scores")
         LOGGER.info("[6/6] Fusing objective evidence and model judgments")
         transition_data = _model_dict(transition)
         # A zero-valued NarrationAnalysis for a genuinely silent video records an
@@ -367,6 +391,16 @@ def _objective_measurements(
 def _model_dict(value: Any | None) -> dict[str, Any]:
     result = to_dict(value) if value is not None else {}
     return result if isinstance(result, dict) else {}
+
+
+def _report_progress(
+    callback: ProgressCallback | None,
+    stage: int,
+    total: int,
+    message: str,
+) -> None:
+    if callback is not None:
+        callback(stage, total, message)
 
 
 def _release_accelerator_memory() -> None:
